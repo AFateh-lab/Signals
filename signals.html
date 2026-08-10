@@ -352,6 +352,10 @@ const CFG = {
   maxOpen: 20,            // most recent N open signals shown
   autoRefreshMin: 5,
 
+  // Keep scanning while the page is open, hold the screen awake, and say
+  // something when a new takeable setup appears.
+  alwaysOn: false, notify: true, sound: true,
+
   // --- how you trade ------------------------------------------------------
   market: "futures",        // "futures" = long+short with leverage
                             // "spot"    = buy only, no leverage
@@ -2122,6 +2126,7 @@ async function run() {
   }
   FEED = buildFeed(CFG.liveOnly ? all.filter(s=>s.at >= cut) : all);
   LASTRUN = Date.now(); progress(1);
+  alertScan(all);
   setDot(ERROR && !all.length ? "bad" : "");
   BUSY = false; render();
   setTimeout(()=>progress(0), 700);
@@ -2487,8 +2492,8 @@ function pill(s) {
   if (s.status==="stopped") return '<span class="pill stop">Stopped &#10005;</span>';
   if (s.status==="reversed") return '<span class="pill flat">Closed on cross</span>';
   if (s.status==="breakeven") return '<span class="pill flat">Breakeven</span>';
-  if (s.status==="completed") return '<span class="pill done">All targets &#10003;</span>';
-  if (s.hits) return `<span class="pill tgt">Target ${s.hits} &#10003;</span>`;
+  if (s.status==="completed") return '<span class="pill done">Sold — all targets &#10003;</span>';
+  if (s.hits) return `<span class="pill tgt">${s.closedAt ? "Sold at" : "Took"} Target ${s.hits} &#10003;</span>`;
   return '<span class="pill prog">In progress</span>';
 }
 
@@ -3330,6 +3335,7 @@ const EXPORT_KEYS = [
   "utKey","utAtrLen","ttLen","ttTarget",
   "slAtr","tpAtr","maxLossPct","beAfter","minLev","maxLev","feePct","slipPct",
   "pairs","pairMode","pickBy","sideBias","custom","focus","maxOpen","minShow","maxAgeBars",
+  "alwaysOn","notify","sound","autoRefreshMin",
   "minWinRate","minRecord","liveOnly",
 ];
 
@@ -3802,6 +3808,10 @@ function autoPanel() {
       : "Futures — long and short, with leverage sized so a stop costs "
         + CFG.maxLossPct + "% of the margin, capped at " + CFG.maxLev + "×."}</div>
     ${deployCard()}
+    <h2>Keep it running</h2>
+    ${liveBlock()}
+    <h2>Keep it running</h2>
+    ${liveBlock()}
     <h2>Which side pays, per coin</h2>
     ${sideBlock()}
     <h2>What it settled on</h2>
@@ -3832,6 +3842,199 @@ function autoSummary() {
     <div class="segnote">Chosen by the search, not by hand. Switch to Manual if
       you want to change any of it — your changes will stand until you press
       Deploy again.</div>`;
+}
+
+/* =========================================================================
+   ALWAYS ON
+
+   A browser tab cannot run when it is closed — no amount of code changes
+   that, and anyone who tells you otherwise is selling something. What it can
+   do is scan continuously while it is open, keep the phone from sleeping, and
+   tell you the moment a new takeable setup appears so you do not have to sit
+   watching it.
+
+   For scanning that survives a closed phone there is the Python bot, which
+   runs on a server. That is a different thing and it is honest to say so.
+   ========================================================================= */
+const WATCHDOG = { wake: null, notified: new Set(), state: new Map(),
+                  seeded: false, lastCount: 0 };
+
+async function toggleAlwaysOn() {
+  CFG.alwaysOn = !CFG.alwaysOn;
+  if (CFG.alwaysOn) {
+    // Anything at or above the 5 minute default is not "always on" in any
+    // useful sense. A faster cadence the user chose themselves is respected.
+    if (CFG.autoRefreshMin >= 5) CFG.autoRefreshMin = 1;
+    await askNotify();
+    await keepAwake();
+    refresh();
+  } else {
+    releaseWake();
+  }
+  writeHash(); render(true);
+}
+
+async function askNotify() {
+  try {
+    if (!("Notification" in window)) return;
+    if (Notification.permission === "default") await Notification.requestPermission();
+  } catch (e) { /* some browsers refuse outside a gesture; not fatal */ }
+}
+
+async function keepAwake() {
+  try {
+    if (!("wakeLock" in navigator)) return;
+    releaseWake();
+    WATCHDOG.wake = await navigator.wakeLock.request("screen");
+    WATCHDOG.wake.addEventListener("release", () => { WATCHDOG.wake = null; });
+  } catch (e) { WATCHDOG.wake = null; }
+}
+function releaseWake() {
+  try { if (WATCHDOG.wake) WATCHDOG.wake.release(); } catch (e) {}
+  WATCHDOG.wake = null;
+}
+
+/* Announces three things: a new setup you can take, a target reached, and a
+   stop hit. The last one matters most — it is the one you would otherwise
+   find out about by opening the app and discovering the money already gone. */
+function alertScan(all) {
+  const shout = (title, body, kind, key) => {
+    if (!CFG.notify) return;
+    try {
+      if ("Notification" in window && Notification.permission === "granted") {
+        new Notification(title, { body, tag: kind + "-" + key });
+      } else { toast(title); }
+    } catch (e) { toast(title); }
+    beep(kind);
+  };
+
+  // Outcomes first: they are about money already at risk.
+  const seen = new Set();
+  for (const s of all) {
+    const k = sigKey(s);
+    seen.add(k);
+    const was = WATCHDOG.state.get(k);
+    WATCHDOG.state.set(k, { hits: s.hits || 0, status: s.status });
+    if (!WATCHDOG.seeded || !was) continue;      // first scan: learn, do not shout
+    const coin = s.symbol.replace("USDT", "");
+    const roi = (s.roi >= 0 ? "+" : "") + s.roi + "%";
+    if (s.status !== was.status &&
+        (s.status === "stopped" || s.status === "breakeven")) {
+      shout(`${coin} ${s.status === "breakeven" ? "closed at breakeven" : "stopped out"}`,
+            `${s.side} from ${s.entry} · ${roi}`, "loss", k);
+    } else if (s.status === "completed" && was.status !== "completed") {
+      shout(`${coin} — all targets hit`, `${s.side} from ${s.entry} · ${roi}`, "win", k);
+    } else if ((s.hits || 0) > (was.hits || 0)) {
+      shout(`${coin} hit Target ${s.hits}`, `${s.side} from ${s.entry} · ${roi}`,
+            "win", k + ":" + s.hits);
+    }
+  }
+  if (WATCHDOG.state.size > 600) {
+    const keep = [...WATCHDOG.state.entries()].filter(([k]) => seen.has(k));
+    WATCHDOG.state = new Map(keep.slice(-300));
+  }
+
+  // Then anything new worth taking.
+  const fired = [];
+  for (const s of OPEN) {
+    if (s.belowBar || entryGone(s)) continue;
+    const k = sigKey(s);
+    if (WATCHDOG.notified.has(k)) continue;
+    WATCHDOG.notified.add(k);
+    if (WATCHDOG.seeded) fired.push(s);
+  }
+  if (WATCHDOG.notified.size > 400) {
+    WATCHDOG.notified = new Set([...WATCHDOG.notified].slice(-200));
+  }
+  WATCHDOG.seeded = true;
+  if (!fired.length) return;
+  const one = fired[0];
+  shout(fired.length === 1
+      ? `${one.side} ${one.symbol.replace("USDT", "")} @ ${one.entry}`
+      : `${fired.length} new signals`,
+    fired.length === 1
+      ? `Stop ${one.stop} · ${one.spot ? "spot" : one.leverage + "x"} · ${one.tag}`
+      : fired.map(s => s.side + " " + s.symbol.replace("USDT", "")).join(", "),
+    "new", sigKey(one));
+}
+
+/* Three tones, so you know what happened without looking: rising for a new
+   setup, higher and doubled for a target, a low fall for a stop. */
+const TONES = {
+  new:  [[880, 0, 0.18]],
+  win:  [[988, 0, 0.14], [1319, 0.16, 0.22]],
+  loss: [[320, 0, 0.30], [220, 0.18, 0.34]],
+};
+function beep(kind) {
+  if (!CFG.sound) return;
+  try {
+    const A = window.AudioContext || window.webkitAudioContext;
+    if (!A) return;
+    const ctx = new A();
+    for (const [hz, at, len] of (TONES[kind] || TONES.new)) {
+      const o = ctx.createOscillator(), g = ctx.createGain();
+      o.connect(g); g.connect(ctx.destination);
+      o.frequency.value = hz;
+      o.type = kind === "loss" ? "triangle" : "sine";
+      const t0 = ctx.currentTime + at;
+      g.gain.setValueAtTime(0.0001, t0);
+      g.gain.exponentialRampToValueAtTime(0.22, t0 + 0.01);
+      g.gain.exponentialRampToValueAtTime(0.0001, t0 + len);
+      o.start(t0); o.stop(t0 + len + 0.02);
+    }
+    setTimeout(() => { try { ctx.close(); } catch (e) {} }, 1200);
+  } catch (e) { /* audio blocked until the user interacts; nothing to do */ }
+}
+
+/** Roughly how often this setup produces something, from the scan itself. */
+function signalRate() {
+  if (!LASTRUN || !CFG.bars) return null;
+  const days = (BARMIN[CFG.signalTf] || 60) * CFG.bars / 1440;
+  const fired = CLOSED.length + OPEN.length;
+  if (!days || !fired) return null;
+  const perDay = fired / days;
+  return { perDay, days: Math.round(days), fired };
+}
+
+function liveBlock() {
+  const r = signalRate();
+  const secs = Math.max(0, Math.round(
+    (LASTRUN + CFG.autoRefreshMin * 60000 - Date.now()) / 1000));
+  return `<div class="status">
+      ${kv("Scanning", CFG.alwaysOn
+        ? '<span class="good">● continuously</span>'
+        : '<span style="color:var(--dim)">only when you open the app</span>')}
+      ${kv("Every", CFG.autoRefreshMin + " min")}
+      ${kv("Next scan", CFG.alwaysOn ? (BUSY ? "running…" : secs + "s") : "—")}
+      ${kv("Scans run", SESSION.scans)}
+      ${kv("Screen kept awake", WATCHDOG.wake ? "yes" : "no")}
+      ${r ? kv("This setup produces", r.perDay >= 1
+          ? r.perDay.toFixed(1) + " signals a day"
+          : "about one every " + Math.round(1 / r.perDay) + " days") : ""}
+    </div>
+    <div class="pickbar" style="margin-top:9px">
+      <button class="${CFG.autoRefreshMin===1?"go":""}" onclick="setv('autoRefreshMin',1,' min')">1 min</button>
+      <button class="${CFG.autoRefreshMin===5?"go":""}" onclick="setv('autoRefreshMin',5,' min')">5 min</button>
+      <button class="${CFG.autoRefreshMin===15?"go":""}" onclick="setv('autoRefreshMin',15,' min')">15 min</button>
+    </div>
+    <div class="status" style="margin-top:9px">
+      <div class="kv"><span class="k">Keep scanning while this page is open</span>
+        <button class="sw${CFG.alwaysOn?" on":""}" onclick="toggleAlwaysOn()"></button></div>
+      <div class="kv"><span class="k">Alert on new signals, targets and stops</span>
+        <button class="sw${CFG.notify?" on":""}" onclick="tgl('notify',this)"></button></div>
+      <div class="kv"><span class="k">Sound — rising for new, double for a
+        target, low for a stop</span>
+        <button class="sw${CFG.sound?" on":""}" onclick="tgl('sound',this)"></button></div>
+    </div>
+    ${r && r.perDay < 0.5 ? `<div class="segnote" style="margin-top:9px">
+      On ${CFG.signalTf} candles this setup fired ${r.fired} times in
+      ${r.days} days. If you want a steady stream rather than a few good ones,
+      that is a timeframe decision, not a scanning-speed one — deploy on Scalp
+      or Fast, or add more coins.</div>` : ""}
+    <div class="hint">A browser tab cannot scan while it is closed. This keeps
+      it working as long as the page is open, holds the screen awake, and
+      alerts you on anything new. For scanning that survives a closed phone,
+      use the server bot in Export.</div>`;
 }
 
 function quickSetup() {
@@ -4086,12 +4289,14 @@ function render(force) {
       + (pass.length ? pass.map(card).join("") +
         '<div class="hint">Tap a card to expand its targets</div>'
         : emptySignals())
-      + (gone.length ? `<h2>Already running</h2>
-        <div class="segnote">These fired earlier and price has already moved
-          away from the entry on the card — one has banked a target, or the
-          move is more than a third of the way to the first one. Worth watching
-          to see how the strategy is doing; too late to take at that price.
-        </div>` + gone.map(card).join("") : "")
+      + (gone.length ? `<h2>Already running (${gone.length})</h2>
+        <div class="segnote">Sold, stopped, or moved too far from the entry on
+          the card to take now. Kept here so you can see what the strategy did;
+          the full record is on Results. The scanner has moved on and is
+          looking for the next fresh setup.
+        </div>` + gone.slice(0, 5).map(card).join("")
+        + (gone.length > 5 ? `<div class="hint">${gone.length - 5} more on the
+            Results tab</div>` : "") : "")
       + (near.length ? `<h2>Did not qualify</h2>
         <div class="segnote">These failed a filter and are shown only because
           "always show at least ${CFG.minShow}" is on. They are not
@@ -6639,7 +6844,12 @@ render();
 run();
 startLive();
 setInterval(()=>{ if (!BUSY && document.visibilityState==="visible" &&
-  Date.now()-LASTRUN > CFG.autoRefreshMin*60000) refresh(); }, 30000);
+  Date.now()-LASTRUN > CFG.autoRefreshMin*60000) refresh(); }, 5000);
+// The wake lock is dropped by the browser whenever the tab is backgrounded,
+// so it has to be taken again on the way back.
+document.addEventListener("visibilitychange", ()=>{
+  if (document.visibilityState === "visible" && CFG.alwaysOn) keepAwake();
+});
 setInterval(()=>{ if (!BUSY && TAB!=="chart") render(); }, 60000);
 document.addEventListener("visibilitychange", ()=>{
   if (document.visibilityState==="visible" &&
