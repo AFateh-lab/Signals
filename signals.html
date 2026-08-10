@@ -2047,6 +2047,11 @@ async function run() {
       } catch (e) { FAILED++; if (!ERROR) ERROR = e.message || String(e); }
       SCANNED++; progress(SCANNED/(syms.length+1));
       if (SCANNED % 5 === 0) render();
+      // Enriching a thousand candles and replaying a strategy over them is
+      // solid synchronous work. Six workers doing it back to back never let
+      // the browser paint or register a tap, which is why the page felt dead
+      // mid-scan. One macrotask between coins hands control back.
+      await new Promise((r) => setTimeout(r, 0));
     }
   };
   await Promise.all(Array.from({length:6}, worker));
@@ -2150,9 +2155,14 @@ async function run() {
       .sort((a,b)=>b.closedAt-a.closedAt).slice(0, 80);
     saveSession();
   } else {
-    CLOSED = all.filter(s=>s.closedAt).sort((a,b)=>b.closedAt-a.closedAt).slice(0,60);
+    // Same rule as the Signals tab: if you asked for nothing older than the
+    // deployment, the record cannot quietly show a month of history either.
+    const from = CFG.sinceDeploy ? startedAt() : 0;
+    CLOSED = all.filter(s => s.closedAt && s.at >= from)
+                .sort((a,b)=>b.closedAt-a.closedAt).slice(0,60);
   }
-  FEED = buildFeed(CFG.liveOnly ? all.filter(s=>s.at >= cut) : all);
+  FEED = buildFeed(CFG.liveOnly ? all.filter(s=>s.at >= cut)
+        : CFG.sinceDeploy ? all.filter(s=>s.at >= startedAt()) : all);
   LASTRUN = Date.now(); progress(1);
   alertScan(all);
   setDot(ERROR && !all.length ? "bad" : "");
@@ -2555,7 +2565,56 @@ function driftBadge(s) {
     s.hits >= 1 ? " · TP" + s.hits + " hit" : " · " + d + "% run"}</span>`;
 }
 
+/* =========================================================================
+   A SIGNAL AS TEXT
+
+   Somebody sending these to other people needs one tap that produces a
+   message, not a screenshot of a phone. Everything a reader needs to act, and
+   nothing they cannot check: the pair, the direction, the entry, the stop,
+   the ladder, when it fired, and what produced it.
+
+   The disclosure lines are not decoration. Anyone passing a signal to another
+   person is telling them where to put money, and the leverage and the fee
+   assumption change the answer.
+   ========================================================================= */
+const SIGBY = {};          // key -> signal, so a card's button can find it
+
+function signalText(s) {
+  if (!s) return "";
+  const coin = s.symbol.replace("USDT", "");
+  const arrow = s.side === "LONG" ? "\u25B2" : "\u25BC";
+  const L = [];
+  L.push(`${arrow} ${s.side} ${coin}${s.spot ? " (spot)" : " x" + s.leverage}`);
+  L.push(`Entry ${s.entry}`);
+  L.push(`Stop  ${s.stop}`);
+  s.targets.forEach((t) => {
+    L.push(`TP${t.index}   ${t.price}  (${t.roi.toFixed(1)}%${t.hit ? " hit" : ""})`);
+  });
+  L.push("");
+  L.push(`${s.stf || CFG.signalTf} chart, ${CFG.trendTf} trend · ${s.tag || ""}`);
+  L.push(`Fired ${new Date(s.at).toLocaleString(undefined, {day:"numeric",
+    month:"short", hour:"2-digit", minute:"2-digit"})}`);
+  if (s.agree != null) L.push(`${s.agree}/${s.agreeOf} indicators agree`);
+  if (s.rec && s.rec.n >= 4) {
+    L.push(`This setup on ${coin}: first target reached ${s.rec.rate}% of the `
+         + `last ${s.rec.n}`);
+  }
+  L.push("");
+  L.push(`Percentages are on margin at ${s.spot ? 1 : s.leverage}x and include `
+       + `${CFG.feePct}% fee + ${CFG.slipPct}% slippage each side.`);
+  L.push("Not advice. Position size so a stop you can survive is a stop you can take.");
+  return L.join("\n");
+}
+
+/** Every takeable signal in one message. */
+function allSignalsText() {
+  const list = OPEN.filter((x) => !x.belowBar && !entryGone(x));
+  if (!list.length) return "No fresh signals right now.";
+  return list.map(signalText).join("\n\n———\n\n");
+}
+
 function card(s, i) {
+  SIGBY[sigKey(s)] = s;
   const rows = s.targets.map(t =>
     `<div class="t${t.hit?" hit":""}"><span>Target ${t.index}</span>
      <span class="p">${t.price}</span>
@@ -2584,6 +2643,8 @@ function card(s, i) {
     <div class="tgts">${rows}</div>
     <div class="why">${esc(s.reasons.join(" · "))}</div>
     <div class="cardbtns">
+      <button onclick="event.stopPropagation();copyOut(signalText(SIGBY['${
+        esc(sigKey(s))}']),'Signal')">Copy signal</button>
       <button onclick="event.stopPropagation();openChart('${esc(s.symbol)}')">
         View chart</button>
       <a onclick="event.stopPropagation()" target="_blank" rel="noopener"
@@ -2802,12 +2863,19 @@ function emptySignals() {
 
 function watchList() {
   if (BUSY || !WATCH.length) return "";
-  const gapMode = CFG.strategy !== "confluence";
-  const rows = WATCH.map(w=>
-    `<div class="mv"><span class="n">${esc(w.symbol.replace("USDT",""))}</span>
-     <span class="px">${w.side}</span>
-     <span class="${w.side==="LONG"?"up":"down"}">${
-       gapMode ? w.gap.toFixed(2)+"% away" : w.pts+"/8"}</span></div>`).join("");
+  // Only the Open/Close scan measures a gap; the others carry a score, and
+  // some carry neither. Reading w.gap unconditionally threw inside render(),
+  // which left the whole view half-built — the app looked frozen when in fact
+  // one number was missing. Never assume a shape you did not construct here.
+  const rows = WATCH.map(w => {
+    const near = Number.isFinite(w.gap) ? w.gap.toFixed(2) + "% away"
+               : Number.isFinite(w.pts) ? w.pts + "/8"
+               : "close";
+    return `<div class="mv"><span class="n">${esc(String(w.symbol || "")
+        .replace("USDT",""))}</span>
+      <span class="px">${esc(w.side || "")}</span>
+      <span class="${w.side==="LONG"?"up":"down"}">${near}</span></div>`;
+  }).join("");
   const hint = CFG.strategy === "occ"
     ? "How far the close MA sits from the open MA. The smaller the gap, the "
       + "closer that pair is to crossing."
@@ -3633,7 +3701,7 @@ function saveDeploy() {
   try {
     localStorage.setItem(DKEY, JSON.stringify({
       on: DEPLOY.on, at: DEPLOY.at, next: DEPLOY.next,
-      retuneHours: DEPLOY.retuneHours, strat: DEPLOY.strat,
+      retuneHours: DEPLOY.retuneHours, strat: DEPLOY.strat, depth: BEST.depth,
       label: DEPLOY.label, winner: DEPLOY.winner, tf: DEPLOY.tf,
       holdout: DEPLOY.holdout, combo: DEPLOY.combo,
       freshStart: DEPLOY.freshStart, perPair: DEPLOY.perPair,
@@ -3690,6 +3758,7 @@ function loadDeploy() {
     }
     // A check that came due while the app was closed runs on the next tick
     // rather than immediately, so opening the app is never a two-minute wait.
+    if (DEPTHS[o.depth]) BEST.depth = o.depth;
     if (DEPLOY.next < Date.now()) DEPLOY.next = Date.now() + 120000;
     scheduleRetune();
   } catch (e) { /* nothing to restore */ }
@@ -3759,6 +3828,11 @@ function perPairBlock() {
     <div class="status">${rows}</div>`;
 }
 
+function setDepth(k) {
+  if (!DEPTHS[k] || BEST.running || DEPLOY.working) return;
+  BEST.depth = k; saveDeploy(); render(true);
+}
+
 function setRetune(h) {
   DEPLOY.retuneHours = +h;
   DEPLOY.next = DEPLOY.at + DEPLOY.retuneHours * 3600000;
@@ -3802,6 +3876,10 @@ function deployBlock() {
       ${kv("Next check", mins > 90 ? Math.round(mins / 60) + "h" : mins + " min")}
       ${kv("Switches so far", DEPLOY.changes)}
     </div>
+    <div class="seg" style="margin-top:9px">${
+      ["fast","normal","deep"].map(k =>
+        `<button class="${k === BEST.depth ? "on" : ""}"
+          onclick="setDepth('${k}')">${DEPTHS[k].label}</button>`).join("")}</div>
     <div class="pickbar" style="margin-top:9px">
       <button onclick="setRetune(2)">2h</button>
       <button onclick="setRetune(6)">6h</button>
@@ -3864,9 +3942,7 @@ function autoPanel() {
     <h2>Which side pays, per coin</h2>
     ${sideBlock()}
     <h2>What it settled on</h2>
-    ${autoSummary()}
-    <h2>Export this setup</h2>
-    ${exportBlock()}`;
+    ${autoSummary()}`;
 }
 
 /* Read-only: what the automatic mode has actually chosen. Not adjustable —
@@ -4138,13 +4214,19 @@ function deployCard() {
   const body = busy ? deployBlock()
     : BEST.rows.length ? bestBlock()
     : DEPLOY.on ? deployBlock() : `
+    <div class="segnote" style="margin-bottom:6px">How hard to look</div>
+    <div class="seg" style="margin-bottom:10px">${
+      ["fast","normal","deep"].map(k =>
+        `<button class="${k === BEST.depth ? "on" : ""}"
+          onclick="setDepth('${k}')">${DEPTHS[k].label}</button>`).join("")}</div>
     <button class="btn gold" style="margin-top:0"
       onclick="deployNow()">Deploy</button>
     <div class="hint">Tests all five strategies on ${coins} at your chosen
       speed, tunes each one, ranks them on history none of them was tuned
       against, switches the scanner to the winner, and refreshes your signals
-      with it. ${OPT_TFS.length} chart-period combinations are tried, from
-      1m/3m up to 1d/1w, so this takes several minutes. Then it re-checks every ${DEPLOY.retuneHours} hours and only
+      with it. All ${OPT_TFS.length} chart-period combinations are screened
+      first, then ${DEPTHS[BEST.depth].keep >= 99 ? "every one is"
+        : "the best " + DEPTHS[BEST.depth].keep + " are"} tuned properly. Then it re-checks every ${DEPLOY.retuneHours} hours and only
       changes strategy again if a challenger clearly beats the one running.
       A few minutes on a phone.</div>
     <button class="btn" onclick="findBestSetup()">Just show me the comparison
@@ -4315,6 +4397,8 @@ async function rescore() { if (!BUSY && CACHE.size) { await run(); } }
 
 function refresh() { CACHE.clear(); run(); }
 
+let LASTHTML = "", LASTPAINT = 0;
+
 function render(force) {
   const st = BUSY ? "Scanning " + CFG.pairs + " pairs…"
     : LASTRUN ? "Updated " + new Date(LASTRUN).toLocaleTimeString() +
@@ -4342,8 +4426,10 @@ function render(force) {
     const gone = OPEN.filter(s => !s.belowBar && entryGone(s));
     const near = OPEN.filter(s => s.belowBar);
     body = (ERROR?errBox():"")
-      + (pass.length ? pass.map(card).join("") +
-        '<div class="hint">Tap a card to expand its targets</div>'
+      + (pass.length ? pass.map(card).join("")
+        + `<button class="btn" onclick="copyOut(allSignalsText(),'${
+            pass.length} signals')">Copy all ${pass.length} as text</button>`
+        + '<div class="hint">Tap a card to expand its targets</div>'
         : emptySignals())
       + (gone.length ? `<h2>Already running (${gone.length})</h2>
         <div class="segnote">Sold, stopped, or moved too far from the entry on
@@ -4371,15 +4457,36 @@ function render(force) {
       : accordion(profileView()) + quickSetup()
         + "<h2>Export this setup</h2>" + exportBlock());
   }
-  $("#view").innerHTML = body;
+  // Rebuilding the whole view is the single most expensive thing this app
+  // does. During a scan render() is called every few coins, and on the Signals
+  // tab that meant tearing down and re-creating twenty cards twenty times a
+  // scan — which is what made tapping Signals feel like the app had died.
+  //
+  // Two guards. Identical HTML is not written at all, so an unchanged list
+  // costs one string compare instead of a full reflow. And while a scan is
+  // running, background repaints are limited to one every 1.2 seconds; the
+  // scan's final render is forced and always lands.
+  const now = Date.now();
+  if (body !== LASTHTML) {
+    if (!force && BUSY && now - LASTPAINT < 1200) return;
+    LASTHTML = body;
+    LASTPAINT = now;
+    $("#view").innerHTML = body;
+  }
   document.querySelectorAll("nav button").forEach(b=>
     b.classList.toggle("on", b.dataset.tab===TAB));
   if (TAB === "chart") initChart(); else clearInterval(CH.poll);
   if (TAB === "closed" && RTAB === "bt" && BT.res) drawEquity();
 }
 
-function go(tab) { TAB=tab; render(true); window.scrollTo({top:0});
-  if (navigator.vibrate) navigator.vibrate(4); }
+function go(tab) {
+  TAB = tab;
+  LASTHTML = "";                 // a tap always repaints, scan or no scan
+  LASTPAINT = 0;
+  render(true);
+  window.scrollTo({top:0});
+  if (navigator.vibrate) navigator.vibrate(4);
+}
 
 /* ==========================================================================
    Backtester. Replays the strategy over deep history and runs it as an
@@ -4857,12 +4964,16 @@ const OPT_TFS = (() => {
 /* When a specific speed is being tuned, the timeframe is that speed's own -
    otherwise "Scalp" would happily wander off and choose daily candles. */
 let OPT_TF_LOCK = null;
+/* A shortlist of chart periods, set by the first pass of the search. */
+let OPT_TF_SET = null;
 
 function optSpace(strategy) {
   // Every section of Settings that can sensibly be searched is in here, so
   // "Find my best setup" answers the whole page rather than a corner of it.
   const common = {
-    tfPair: OPT_TF_LOCK ? [OPT_TF_LOCK] : OPT_TFS.map((p) => p.join(">")),
+    tfPair: OPT_TF_LOCK ? [OPT_TF_LOCK]
+          : OPT_TF_SET ? OPT_TF_SET.slice()
+          : OPT_TFS.map((p) => p.join(">")),
     requireHtf: [true, false],
     riskPct: [1, 2, 3, 5],
     maxOpen: [3, 5, 8, 12],
@@ -5461,7 +5572,21 @@ function optVerdict(r) {
    twenty sliders you have to reason about.
    ========================================================================= */
 
+/* How hard to look. Fast screens all the chart periods on a short slice and
+   then tunes the best four properly; Deep skips the screen and tunes every
+   period on a long slice. Fast is the default because a search nobody waits
+   for is a search that never runs. */
+const DEPTHS = {
+  fast:   { screen: true,  screenBars: 300, screenBudget: 60,  keep: 4,
+            bars: 700,  budget: 400,  label: "Fast" },
+  normal: { screen: true,  screenBars: 400, screenBudget: 120, keep: 6,
+            bars: 1000, budget: 800,  label: "Balanced" },
+  deep:   { screen: false, screenBars: 0,   screenBudget: 0,   keep: 99,
+            bars: 1200, budget: 1500, label: "Thorough" },
+};
+
 const BEST = {
+  depth: "fast", screened: 0, kept: null,
   running: false, cancel: false,
   step: "", rows: [], done: 0, err: null, at: 0, seconds: 0,
 };
@@ -5584,10 +5709,52 @@ async function findBestSetup() {
   // would be answering a different question.
   BT.scope = (CFG.pairMode === "custom" && CFG.custom.length) ? "chosen" : "top20";
   BEST.scope = BT.scope;                    // recorded before the restore below
-  if (BT.bars < 800) BT.bars = 1000;
   OPT.data = null; OPT.dataKey = "";
+  OPT_TF_SET = null;
+
+  const D = DEPTHS[BEST.depth] || DEPTHS.normal;
 
   try {
+    /* ---------------------------------------------------------- first pass
+       Thirty-three chart periods tuned properly against five strategies is
+       an enormous amount of work, and most of those periods are hopeless
+       within a few trials. So: a cheap screen over all of them on a short
+       slice of history, then the real search on the handful that survived.
+
+       Same idea as reading the abstracts before the papers. It costs one
+       quick pass and saves most of the expensive one. */
+    if (D.screen && OPT_TFS.length > D.keep) {
+      const score = new Map();
+      BT.bars = D.screenBars;
+      for (const strat of BEST_ORDER) {
+        if (BEST.cancel) break;
+        BEST.step = `Narrowing ${OPT_TFS.length} chart periods — `
+                  + `${BT_STRATS[strat] || strat}`;
+        render(true);
+        await optPause();
+        BT.strategy = strat;
+        OPT.budget = D.screenBudget;
+        await autoTune();
+        const by = OPT.res && OPT.res.byTf;
+        if (by) {
+          for (const tf in by) {
+            const h = by[tf].holdout;
+            const v = h && h.n >= 4 ? h.netPct : -9999;
+            if (!score.has(tf) || v > score.get(tf)) score.set(tf, v);
+          }
+        }
+        OPT.res = null;
+      }
+      const ranked = [...score.entries()].sort((a, b) => b[1] - a[1]);
+      if (ranked.length) {
+        OPT_TF_SET = ranked.slice(0, D.keep).map(([tf]) => tf);
+        BEST.screened = OPT_TFS.length;
+        BEST.kept = OPT_TF_SET.slice();
+      }
+      OPT.data = null; OPT.dataKey = "";     // different history length below
+    }
+
+    BT.bars = D.bars;
     for (const strat of BEST_ORDER) {
       if (BEST.cancel) break;
       BEST.step = "Tuning " + (BT_STRATS[strat] || strat)
@@ -5596,7 +5763,7 @@ async function findBestSetup() {
       await optPause();
 
       BT.strategy = strat;
-      OPT.budget = 800;
+      OPT.budget = D.budget;
       await autoTune();                       // shares the downloaded candles
 
       if (OPT.res) {
@@ -5620,6 +5787,7 @@ async function findBestSetup() {
     BEST.err = e.message || String(e);
   } finally {
     BT.scope = keepScope; BT.bars = keepBars; BT.strategy = keepStrat;
+    OPT_TF_SET = null;
   }
 
   // Ranked purely on the block none of them ever saw.
@@ -5716,7 +5884,10 @@ function bestBlock() {
       ${BEST.seconds}s, ${BEST.scope === "chosen" ? "your chosen pairs"
         : "top 20 pairs"}, ${OPT_TFS.length} chart periods tried.${OPT.trimmed
         ? " Coin list trimmed by " + OPT.trimmed + " to hold that many periods "
-          + "in memory at once." : ""}</div>
+          + "in memory at once." : ""}${BEST.screened
+        ? " Screened all " + BEST.screened + ", then tuned the best "
+          + (BEST.kept ? BEST.kept.length : 0) + " properly."
+        : ""}</div>
     <div class="status">${rows}</div>
     ${good ? `
       ${tfTable(win)}
