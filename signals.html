@@ -356,6 +356,9 @@ const CFG = {
   // something when a new takeable setup appears.
   alwaysOn: false, notify: true, sound: true,
 
+  // Scan with your saved setup as well as the live one, every pass.
+  dualScan: false,
+
   // Show only what has fired since the deployment started. The strictest
   // possible reading of "fresh": not "recent", but "after I pressed Deploy".
   sinceDeploy: true,
@@ -1759,12 +1762,24 @@ function track(sig, d) {
    path — there are five — or the global settings are left holding one coin's
    choice, and the next scan is no longer in auto mode at all. A single manual
    restore on one branch was doing exactly that. */
+/* Six workers share one CFG, so the per-coin strategy swap is only safe if
+   nothing can run between the swap and its undo. Everything after the swap in
+   the body is synchronous, and every exit calls st.done() before returning --
+   so the swap and the restore happen inside one uninterrupted turn.
+
+   Undoing it in this wrapper's `finally` was not enough: that runs a microtask
+   later, by which point another worker had already started and recorded the
+   swapped value as the thing to put back. The scan then quietly stopped being
+   per-coin at all. */
 async function scanSymbol(sym) {
-  const st = { keep: null };
+  const st = { keep: null, done: null };
   try {
     return await scanSymbolBody(sym, st);
   } finally {
-    if (st.keep) for (const k in st.keep) CFG[k] = st.keep[k];
+    if (st.keep) {                      // belt and braces on an early throw
+      for (const k in st.keep) CFG[k] = st.keep[k];
+      if (PASS_STRATEGY !== null) CFG.strategy = PASS_STRATEGY;
+    }
   }
 }
 
@@ -1805,7 +1820,7 @@ async function scanSymbolBody(sym, __st) {
     }
     const chosen = AUTOPICK.get(sym);
     autoKeep = {strategy: CFG.strategy};
-    __st.keep = autoKeep;              // undone in the caller's finally
+    __st.keep = autoKeep;              // and again in the caller, on a throw
     // No pick yet: use whatever won the basket-wide search rather than
     // silently defaulting to one strategy for everything.
     CFG.strategy = chosen ? chosen.strat
@@ -1817,6 +1832,11 @@ async function scanSymbolBody(sym, __st) {
         CFG[k] = chosen.params[k];
       }
     }
+    __st.done = () => {
+      for (const k in autoKeep) CFG[k] = autoKeep[k];
+      if (PASS_STRATEGY !== null) CFG.strategy = PASS_STRATEGY;
+      __st.keep = null;
+    };
   }
 
   // Four independent reads of direction, one value per candle.
@@ -1867,6 +1887,7 @@ async function scanSymbolBody(sym, __st) {
                 gap: Math.abs(gap), agrees: true};
       }
     }
+    if (__st.done) __st.done();
     return {found, near};
   }
 
@@ -1889,6 +1910,7 @@ async function scanSymbolBody(sym, __st) {
               gap: Math.abs(gap), agrees: true};
     }
     if (autoKeep) for (const k in autoKeep) CFG[k] = autoKeep[k];
+    if (__st.done) __st.done();
     return {found, near};
   }
 
@@ -1909,6 +1931,7 @@ async function scanSymbolBody(sym, __st) {
               gap: Math.abs((d.close[last]-line)/d.close[last]*100), agrees: true};
     }
     if (autoKeep) for (const k in autoKeep) CFG[k] = autoKeep[k];
+    if (__st.done) __st.done();
     return {found, near};
   }
 
@@ -1933,6 +1956,7 @@ async function scanSymbolBody(sym, __st) {
               gap: nearest.dist/px*100, agrees: true};
     }
     if (autoKeep) for (const k in autoKeep) CFG[k] = autoKeep[k];
+    if (__st.done) __st.done();
     return {found, near};
   }
 
@@ -1972,7 +1996,85 @@ async function scanSymbolBody(sym, __st) {
     near = {symbol: sym, side, pts, agrees: bias === side};
   }
   if (autoKeep) for (const k in autoKeep) CFG[k] = autoKeep[k];
-  return {found, near};
+  if (__st.done) __st.done();
+    return {found, near};
+}
+
+/* =========================================================================
+   TWO SETUPS AT ONCE
+
+   Your own settings and the ones the search deployed are different opinions
+   about the same market. Running only one means the other's signals never
+   happen. Running both means whichever fires, fires — immediately, with the
+   card saying which produced it.
+
+   The cost is honest: a second pass over the same coins. No extra downloads,
+   because the candles are already cached, but twice the processor work. It is
+   off unless you ask for it, and it refuses to run the same setup twice.
+   ========================================================================= */
+
+/* The fields that make one setup different from another. Anything not here
+   is shared, because it is about the app rather than the trading. */
+const SETUP_KEYS = [
+  "strategy", "signalTf", "trendTf", "requireHtf", "minScore", "adxMin",
+  "minAgree", "slAtr", "tpAtr", "beAfter", "maxLossPct", "minLev", "maxLev",
+  "cooldownBars", "occMaType", "occMaLen", "occMult", "occExitOnCross",
+  "utKey", "utAtrLen", "ttLen", "ttTarget",
+  "srPivot", "srZoneAtr", "srMinTouch", "srMode", "srZoneStop", "srBreakAtr",
+];
+
+/* The setup you built by hand, kept aside so the deployment cannot eat it. */
+let MYSETUP = null;
+
+/* What CFG.strategy is meant to be for the pass currently running, so a
+   concurrent worker cannot restore a neighbour's value over it. */
+let PASS_STRATEGY = null;
+
+function snapshotSetup(from) {
+  const o = {};
+  for (const k of SETUP_KEYS) {
+    o[k] = Array.isArray((from || CFG)[k]) ? (from || CFG)[k].slice() : (from || CFG)[k];
+  }
+  return o;
+}
+
+function applySetup(setup) {
+  // Nothing applied, nothing to undo. Returning a blanket restore here was a
+  // quiet disaster: a scan takes a minute, and on finishing it would put back
+  // the settings as they were when it started — throwing away anything changed
+  // while it ran. Change the strategy mid-scan and it reverted itself.
+  if (!setup) return () => {};
+  const before = snapshotSetup();
+  for (const k of SETUP_KEYS) if (k in setup) CFG[k] = setup[k];
+  return () => { for (const k of SETUP_KEYS) CFG[k] = before[k]; };
+}
+
+function sameSetup(a, b) {
+  if (!a || !b) return false;
+  return SETUP_KEYS.every((k) => String(a[k]) === String(b[k]));
+}
+
+/** Save what is on screen now as "my setup", so it can run alongside. */
+function saveMySetup() {
+  MYSETUP = snapshotSetup();
+  CFG.dualScan = true;
+  writeHash(); render(true);
+  toast("Saved — both setups now scanning");
+  refresh();
+}
+function dropMySetup() {
+  MYSETUP = null; CFG.dualScan = false;
+  writeHash(); render(true); refresh();
+}
+
+/** Which setups this scan should run. The live one always; yours as well. */
+function activeSetups() {
+  const live = { id: "live", name: DEPLOY.on ? "Deployed" : "Current",
+                 cfg: null };
+  if (!CFG.dualScan || !MYSETUP || sameSetup(MYSETUP, snapshotSetup())) {
+    return [live];
+  }
+  return [live, { id: "mine", name: "My setup", cfg: MYSETUP }];
 }
 
 /* --------------------------------------------------------------------- run */
@@ -2034,28 +2136,48 @@ async function run() {
   const syms = UNIVERSE.slice();
   render();
 
-  // 2. Scan them, six at a time.
+  // 2. Scan them, six at a time — once per active setup.
+  //
+  // Two setups can run side by side: the one you configured and the one the
+  // search deployed. They see the same coins and the same candles, so the
+  // second pass costs processor time but no extra downloads. Whichever fires
+  // first, fires — and every card says which setup produced it, because a
+  // signal you cannot attribute is a signal you cannot judge.
   const all = [], near = [];
-  const queue = syms.slice();
-  const worker = async () => {
-    while (queue.length) {
-      const s = queue.shift();
-      try {
-        const r = await scanSymbol(s);
-        all.push(...r.found);
-        if (r.near) near.push(r.near);
-      } catch (e) { FAILED++; if (!ERROR) ERROR = e.message || String(e); }
-      SCANNED++; progress(SCANNED/(syms.length+1));
-      if (SCANNED % 5 === 0) render();
-      // Enriching a thousand candles and replaying a strategy over them is
-      // solid synchronous work. Six workers doing it back to back never let
-      // the browser paint or register a tap, which is why the page felt dead
-      // mid-scan. One macrotask between coins hands control back.
-      await new Promise((r) => setTimeout(r, 0));
-    }
-  };
-  await Promise.all(Array.from({length:6}, worker));
-  if (FAILED < syms.length) ERROR = null;       // partial failures are fine
+  const passes = activeSetups();
+  // Whatever happens inside a pass -- a throw from a render, a worker dying --
+  // the settings must come out exactly as they went in. A scan that leaves
+  // CFG holding one coin's strategy silently turns off per-coin selection for
+  // every scan after it, and nothing on screen says so.
+  try {
+  for (const pass of passes) {
+    const restore = applySetup(pass.cfg);
+    PASS_STRATEGY = CFG.strategy;
+    const queue = syms.slice();
+    const worker = async () => {
+      while (queue.length) {
+        const s = queue.shift();
+        try {
+          const r = await scanSymbol(s);
+          for (const sig of r.found) { sig.setup = pass.id; sig.setupName = pass.name; }
+          all.push(...r.found);
+          if (r.near && pass.id === passes[0].id) near.push(r.near);
+        } catch (e) { FAILED++; if (!ERROR) ERROR = e.message || String(e); }
+        SCANNED++; progress(SCANNED / (syms.length * passes.length + 1));
+        if (SCANNED % 5 === 0) render();
+        // Enriching a thousand candles and replaying a strategy over them is
+        // solid synchronous work. Six workers doing it back to back never let
+        // the browser paint or register a tap, which is why the page felt dead
+        // mid-scan. One macrotask between coins hands control back.
+        await new Promise((r) => setTimeout(r, 0));
+      }
+    };
+    await Promise.all(Array.from({length:6}, worker));
+    PASS_STRATEGY = null;
+    restore();
+  }
+  } finally { PASS_STRATEGY = null; }
+  if (FAILED < syms.length * passes.length) ERROR = null;   // partials are fine
 
   WATCH = CFG.strategy === "occ"
     ? near.filter(n=>n.gap != null).sort((a,b)=>a.gap-b.gap).slice(0,8)
@@ -2116,8 +2238,11 @@ async function run() {
       SPARE.push(s);
       continue;
     }
-    if (seen.has(s.symbol)) { DROP.dup++; continue; }
-    seen.add(s.symbol); s.focus = CFG.focus.includes(s.symbol); OPEN.push(s);
+    // Keyed by setup as well as symbol: the same coin can legitimately fire
+    // on both setups, and collapsing them would hide that they agreed.
+    const key = s.symbol + "|" + (s.setup || "live");
+    if (seen.has(key)) { DROP.dup++; continue; }
+    seen.add(key); s.focus = CFG.focus.includes(s.symbol); OPEN.push(s);
   }
   if (CFG.focusFirst) {
     const rank = s => {
@@ -2126,6 +2251,21 @@ async function run() {
     };
     OPEN.sort((a,b)=> rank(a)-rank(b) || b.at-a.at);
   }
+  // Two setups can disagree about the same coin — one long, one short. That is
+  // not a bug, it is two opinions, and showing them as two calm cards would be
+  // the app pretending they are compatible. Flag both and let the reader
+  // decide; the honest reading is usually "no trade here".
+  const bySide = new Map();
+  for (const s of OPEN) {
+    const cur = bySide.get(s.symbol) || new Set();
+    cur.add(s.side);
+    bySide.set(s.symbol, cur);
+  }
+  for (const s of OPEN) {
+    const sides = bySide.get(s.symbol);
+    s.conflict = sides && sides.size > 1;
+  }
+
   DROP.capped = Math.max(0, OPEN.length - CFG.maxOpen);
   OPEN = OPEN.slice(0, CFG.maxOpen);
 
@@ -2591,10 +2731,15 @@ function signalText(s) {
     L.push(`TP${t.index}   ${t.price}  (${t.roi.toFixed(1)}%${t.hit ? " hit" : ""})`);
   });
   L.push("");
-  L.push(`${s.stf || CFG.signalTf} chart, ${CFG.trendTf} trend · ${s.tag || ""}`);
+  L.push(`${s.stf || CFG.signalTf} chart, ${CFG.trendTf} trend · ${s.tag || ""}`
+       + (s.setupName ? ` · ${s.setupName}` : ""));
   L.push(`Fired ${new Date(s.at).toLocaleString(undefined, {day:"numeric",
     month:"short", hour:"2-digit", minute:"2-digit"})}`);
   if (s.agree != null) L.push(`${s.agree}/${s.agreeOf} indicators agree`);
+  if (s.conflict) {
+    L.push(`WARNING: the other setup is signalling ${
+      s.side === "LONG" ? "SHORT" : "LONG"} on this coin at the same time.`);
+  }
   if (s.rec && s.rec.n >= 4) {
     L.push(`This setup on ${coin}: first target reached ${s.rec.rate}% of the `
          + `last ${s.rec.n}`);
@@ -2630,6 +2775,11 @@ function card(s, i) {
       <span class="b meta">${s.stf || CFG.signalTf} &middot; ${s.tag || (s.score+"/8")}</span>
       ${s.belowBar ? `<span class="b" style="background:#3a2f16;color:#f0c14b"
         >below filter · ${esc(s.belowBar)}</span>` : ""}
+      ${s.setup === "mine" ? `<span class="b" style="background:#1d3a5c;color:#9ad2ff"
+        >my setup</span>` : ""}
+      ${s.conflict ? `<span class="b" style="background:#4a2317;color:#ffb08a"
+        >conflict · the other setup says ${s.side === "LONG" ? "SHORT" : "LONG"}</span>`
+        : ""}
       ${s.agree != null ? `<span class="b" style="background:${
         s.agree >= 3 ? "#0f5f34" : s.agree === 2 ? "var(--sunk)" : "#3a2326"
       };color:${s.agree >= 3 ? "#8ff0c0" : s.agree === 2 ? "#9b9ba3" : "#ffb4b7"}"
@@ -3452,7 +3602,7 @@ const EXPORT_KEYS = [
   "utKey","utAtrLen","ttLen","ttTarget",
   "slAtr","tpAtr","maxLossPct","beAfter","minLev","maxLev","feePct","slipPct",
   "pairs","pairMode","pickBy","sideBias","custom","focus","maxOpen","minShow","maxAgeBars",
-  "alwaysOn","notify","sound","autoRefreshMin","sinceDeploy",
+  "alwaysOn","notify","sound","autoRefreshMin","sinceDeploy","dualScan",
   "minWinRate","minRecord","liveOnly",
 ];
 
@@ -4149,6 +4299,10 @@ function liveBlock() {
     <div class="status" style="margin-top:9px">
       <div class="kv"><span class="k">Keep scanning while this page is open</span>
         <button class="sw${CFG.alwaysOn?" on":""}" onclick="toggleAlwaysOn()"></button></div>
+      <div class="kv"><span class="k">Also scan with my saved setup${
+        MYSETUP ? "" : " — none saved yet"}</span>
+        <button class="sw${CFG.dualScan && MYSETUP ? " on" : ""}"
+          onclick="${MYSETUP ? "tgl('dualScan',this)" : "saveMySetup()"}"></button></div>
       <div class="kv"><span class="k">Only signals that fired after I deployed</span>
         <button class="sw${CFG.sinceDeploy?" on":""}" onclick="tgl('sinceDeploy',this)"></button></div>
       <div class="kv"><span class="k">Alert on new signals, targets and stops</span>
@@ -4157,6 +4311,15 @@ function liveBlock() {
         target, low for a stop</span>
         <button class="sw${CFG.sound?" on":""}" onclick="tgl('sound',this)"></button></div>
     </div>
+    <div class="pickbar" style="margin-top:9px">
+      <button onclick="saveMySetup()">${MYSETUP ? "Re-save" : "Save"} current as
+        my setup</button>
+      ${MYSETUP ? `<button onclick="dropMySetup()">Forget it</button>` : ""}
+    </div>
+    <div class="hint">Two setups can run side by side — the one the search
+      deployed and the one you built. Both scan every pass, whichever fires
+      posts immediately, and each card says which produced it. It doubles the
+      processor work per scan, not the downloads.</div>
     ${r && r.perDay < 0.5 ? `<div class="segnote" style="margin-top:9px">
       On ${CFG.signalTf} candles this setup fired ${r.fired} times in
       ${r.days} days. If you want a steady stream rather than a few good ones,
@@ -4425,7 +4588,13 @@ function render(force) {
     const pass = OPEN.filter(s => !s.belowBar && !entryGone(s));
     const gone = OPEN.filter(s => !s.belowBar && entryGone(s));
     const near = OPEN.filter(s => s.belowBar);
+    const clash = [...new Set(pass.filter(s => s.conflict).map(s => s.symbol))];
     body = (ERROR?errBox():"")
+      + (clash.length ? `<div class="segnote" style="color:#ffb08a">Your two
+          setups disagree on ${clash.map(c => esc(c.replace("USDT",""))).join(", ")}
+          — one is long, the other short. Taking both is paying two spreads to
+          hold no position; taking one is picking a side the app cannot pick
+          for you.</div>` : "")
       + (pass.length ? pass.map(card).join("")
         + `<button class="btn" onclick="copyOut(allSignalsText(),'${
             pass.length} signals')">Copy all ${pass.length} as text</button>`
@@ -4467,8 +4636,9 @@ function render(force) {
   // running, background repaints are limited to one every 1.2 seconds; the
   // scan's final render is forced and always lands.
   const now = Date.now();
+  const working = BUSY || OPT.running || BEST.running || DEPLOY.working;
   if (body !== LASTHTML) {
-    if (!force && BUSY && now - LASTPAINT < 1200) return;
+    if (!force && working && now - LASTPAINT < 1200) return;
     LASTHTML = body;
     LASTPAINT = now;
     $("#view").innerHTML = body;
@@ -5262,11 +5432,14 @@ async function autoTune() {
   };
 
   const breathe = async () => {
-    if (performance.now() - tick < 90) return;
+    if (performance.now() - tick < 40) return;
     tick = performance.now();
     const per = (Date.now() - OPT.startedAt) / Math.max(1, OPT.evals);
     OPT.eta = Math.round((Math.min(OPT.budget, total) - OPT.evals) * per / 1000);
-    render(true);
+    // Not render(true). Forcing a full rebuild of the Settings page every time
+    // the trial counter moves is what locked the screen during a deploy; the
+    // throttle below keeps the progress readable without the reflow storm.
+    render();
     await optPause();
   };
 
@@ -7102,8 +7275,13 @@ for (const k of BT_KEYS) if (k !== "strategy") BT[k] = CFG[k];
 render();
 run();
 startLive();
-setInterval(()=>{ if (!BUSY && document.visibilityState==="visible" &&
-  Date.now()-LASTRUN > CFG.autoRefreshMin*60000) refresh(); }, 5000);
+setInterval(()=>{
+  // A scan on top of a running search means two heavy jobs fighting over one
+  // thread, and the phone loses. The search finishes, then scanning resumes.
+  if (BUSY || OPT.running || BEST.running || DEPLOY.working) return;
+  if (document.visibilityState !== "visible") return;
+  if (Date.now()-LASTRUN > CFG.autoRefreshMin*60000) refresh();
+}, 5000);
 // The wake lock is dropped by the browser whenever the tab is backgrounded,
 // so it has to be taken again on the way back.
 document.addEventListener("visibilitychange", ()=>{
@@ -7111,8 +7289,9 @@ document.addEventListener("visibilitychange", ()=>{
 });
 setInterval(()=>{ if (!BUSY && TAB!=="chart") render(); }, 60000);
 document.addEventListener("visibilitychange", ()=>{
-  if (document.visibilityState==="visible" &&
-      Date.now()-LASTRUN > CFG.autoRefreshMin*60000) refresh(); });
+  if (document.visibilityState==="visible" && !OPT.running && !BEST.running
+      && !DEPLOY.working
+      && Date.now()-LASTRUN > CFG.autoRefreshMin*60000) refresh(); });
 </script>
 </body>
 </html>
