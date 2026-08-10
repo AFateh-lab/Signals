@@ -1586,6 +1586,9 @@ function agreementAt(votes, i, side) {
    only refreshed when you ask for it.
    ========================================================================= */
 
+/* How much per-coin deciding one scan is allowed to do. */
+const AUTO = { ttl: 6 * 3600 * 1000, perScan: 6, left: 0, decided: 0, waiting: 0 };
+
 const AUTOPICK = new Map();          // symbol -> {strat, score, at}
 const AUTO_STRATS = ["confluence", "occ", "ut", "tt", "sr"];
 const STRAT_SHORT = {confluence:"Confluence", occ:"Open/Close", sr:"S&R",
@@ -1776,20 +1779,37 @@ async function scanSymbolBody(sym, __st) {
   let near = null;
 
   // Auto-pilot: let this pair's own history choose the strategy.
+  //
+  // Deciding costs five full replays of that coin's history. Doing it for a
+  // hundred coins in one pass is five hundred replays, which on a phone is
+  // minutes of a frozen screen and no signals — the scan never finishes.
+  //
+  // So only a handful of coins are re-decided per scan, and the choice is kept
+  // for hours rather than half an hour. Everything else uses the pick it
+  // already has, or the strategy that won the search, and gets its turn on a
+  // later pass. The whole list converges over a few scans instead of stalling
+  // on the first one.
   let autoKeep = null;
   if (CFG.strategy === "auto") {
     const cached = AUTOPICK.get(sym);
-    const fresh = cached && Date.now() - cached.at < 30*60*1000
+    const fresh = cached && Date.now() - cached.at < AUTO.ttl
       && (cached.tuned || cached.tf === CFG.signalTf);
-    if (!fresh) {
+    if (!fresh && AUTO.left > 0) {
+      AUTO.left--;
+      AUTO.decided++;
       const pick = autoPick(sym, d, h, ltf);
       if (pick) AUTOPICK.set(sym, {strat: pick.strat, exp: pick.exp, n: pick.n,
                                    at: Date.now(), tf: CFG.signalTf});
+    } else if (!fresh) {
+      AUTO.waiting++;
     }
     const chosen = AUTOPICK.get(sym);
     autoKeep = {strategy: CFG.strategy};
     __st.keep = autoKeep;              // undone in the caller's finally
-    CFG.strategy = chosen ? chosen.strat : "confluence";
+    // No pick yet: use whatever won the basket-wide search rather than
+    // silently defaulting to one strategy for everything.
+    CFG.strategy = chosen ? chosen.strat
+                 : (DEPLOY.strat || BT.strategy || "confluence");
     // A coin that has been individually tuned also carries its own settings.
     if (chosen && chosen.params) {
       for (const k in chosen.params) {
@@ -1960,6 +1980,7 @@ async function run() {
   if (BUSY) return;
   BUSY = true; ERROR = null; SCANNED = 0; FAILED = 0; setDot("busy");
   DROP = {old:0, agree:0, dup:0, capped:0, stale:0, weak:0, before:0, total:0};
+  AUTO.left = AUTO.perScan; AUTO.decided = 0; AUTO.waiting = 0;
   SPARE = [];
   progress(0.01); render();
 
@@ -4122,7 +4143,8 @@ function deployCard() {
     <div class="hint">Tests all five strategies on ${coins} at your chosen
       speed, tunes each one, ranks them on history none of them was tuned
       against, switches the scanner to the winner, and refreshes your signals
-      with it. Then it re-checks every ${DEPLOY.retuneHours} hours and only
+      with it. ${OPT_TFS.length} chart-period combinations are tried, from
+      1m/3m up to 1d/1w, so this takes several minutes. Then it re-checks every ${DEPLOY.retuneHours} hours and only
       changes strategy again if a challenger clearly beats the one running.
       A few minutes on a phone.</div>
     <button class="btn" onclick="findBestSetup()">Just show me the comparison
@@ -4812,8 +4834,24 @@ const OPT_BUDGETS = [1000, 20000, 100000];
 /* Timeframe pairs the search may choose between. Making the chart itself a
    searchable setting is what takes the space past six figures - and it is a
    real question, since a strategy that fails on 1h can work on 4h. */
-const OPT_TFS = [["5m","30m"],["15m","1h"],["1h","4h"],["2h","4h"],
-                 ["4h","1d"],["1d","1w"]];
+/* Rather than a hand-written list, every signal period is paired with every
+   trend period between 3x and 20x its length. Below 3x the "trend" is the same
+   noise read twice; above 20x it barely moves inside the trade and stops
+   filtering anything. The rule produces every combination worth testing —
+   2h against 1d, 1h against 12h, 30m against 8h — without inventing pairs
+   that cannot inform each other. */
+const TF_SIGNAL = ["1m","3m","5m","15m","30m","1h","2h","4h","6h","12h","1d"];
+const TF_TREND  = ["3m","5m","15m","30m","1h","2h","4h","6h","8h","12h","1d","3d","1w"];
+const OPT_TFS = (() => {
+  const out = [];
+  for (const sig of TF_SIGNAL) {
+    for (const trend of TF_TREND) {
+      const ratio = BARMIN[trend] / BARMIN[sig];
+      if (ratio >= 3 && ratio <= 20) out.push([sig, trend]);
+    }
+  }
+  return out;
+})();
 
 /* ------------------------------------------------------------ the space */
 /* When a specific speed is being tuned, the timeframe is that speed's own -
@@ -5001,7 +5039,21 @@ async function optPrepare(strategy, tfPairs) {
                pairs.map((p) => p.join(">")).join(",")].join("|");
   if (OPT.data && OPT.dataKey === key) return true;
 
-  const syms = btSymbols();
+  // Every (coin x chart period) is a full set of enriched candles held at
+  // once. Thirty-odd periods across twenty coins is six hundred of them, which
+  // is where a phone runs out of room and the tab dies. The cap trims the coin
+  // list rather than the period list — comparing periods is the entire point
+  // of the search — and it reports what it cut instead of quietly shrinking.
+  const CAP = 400;
+  let syms = btSymbols();
+  OPT.trimmed = 0;
+  if (syms.length * pairs.length > CAP) {
+    const room = Math.max(8, Math.floor(CAP / pairs.length));
+    if (room < syms.length) {
+      OPT.trimmed = syms.length - room;
+      syms = syms.slice(0, room);
+    }
+  }
   const total = syms.length * pairs.length;
   const sets = {};
   let done = 0;
@@ -5662,7 +5714,9 @@ function bestBlock() {
 
   return `<div class="segnote">Ranked on history none of them was tuned on.
       ${BEST.seconds}s, ${BEST.scope === "chosen" ? "your chosen pairs"
-        : "top 20 pairs"}, ${BT.signalTf} candles.</div>
+        : "top 20 pairs"}, ${OPT_TFS.length} chart periods tried.${OPT.trimmed
+        ? " Coin list trimmed by " + OPT.trimmed + " to hold that many periods "
+          + "in memory at once." : ""}</div>
     <div class="status">${rows}</div>
     ${good ? `
       ${tfTable(win)}
