@@ -356,6 +356,10 @@ const CFG = {
   // something when a new takeable setup appears.
   alwaysOn: false, notify: true, sound: true,
 
+  // Show only what has fired since the deployment started. The strictest
+  // possible reading of "fresh": not "recent", but "after I pressed Deploy".
+  sinceDeploy: true,
+
   // --- how you trade ------------------------------------------------------
   market: "futures",        // "futures" = long+short with leverage
                             // "spot"    = buy only, no leverage
@@ -582,7 +586,7 @@ let OPEN = [], CLOSED = [], MARKET = {majors:[],movers:[]}, FEED = [];
 let UNIVERSE = [], SCANNED = 0, FAILED = 0, WATCH = [];
 /* Why signals did not reach the list. An empty screen should be able to say
    which filter emptied it, with numbers, rather than just "nothing found". */
-let DROP = {old:0, agree:0, dup:0, capped:0, stale:0, weak:0, total:0};
+let DROP = {old:0, agree:0, dup:0, capped:0, stale:0, weak:0, before:0, total:0};
 /* Signals the filters rejected. Kept so the list can be topped up rather than
    left empty - they are shown marked, never silently mixed in. */
 let SPARE = [];   // WATCH = near misses
@@ -1955,7 +1959,7 @@ async function scanSymbolBody(sym, __st) {
 async function run() {
   if (BUSY) return;
   BUSY = true; ERROR = null; SCANNED = 0; FAILED = 0; setDot("busy");
-  DROP = {old:0, agree:0, dup:0, capped:0, stale:0, weak:0, total:0};
+  DROP = {old:0, agree:0, dup:0, capped:0, stale:0, weak:0, before:0, total:0};
   SPARE = [];
   progress(0.01); render();
 
@@ -2067,6 +2071,8 @@ async function run() {
     // live right now just because it fired before you opened the app. What is
     // current is decided by the freshness window, and by that alone.
     if (fresh && s.at < fresh) { DROP.stale++; continue; }
+    // Strictest first: fired before this deployment began.
+    if (CFG.sinceDeploy && s.at < startedAt()) { DROP.before++; continue; }
     if (CFG.sideBias) {
       const want = sideBiasOf(s.symbol);
       if (want && s.side !== want) {
@@ -2103,7 +2109,8 @@ async function run() {
     const have = new Set(OPEN.map(s => s.symbol));
     const extra = SPARE
       .filter(s => !s.closedAt && !have.has(s.symbol)
-                   && (!fresh || s.at >= fresh))
+                   && (!fresh || s.at >= fresh)
+                   && (!CFG.sinceDeploy || s.at >= startedAt()))
       .sort((a,b) => (b.agree||0) - (a.agree||0) || (b.score||0) - (a.score||0)
                      || b.at - a.at);
     for (const s of extra) {
@@ -2314,6 +2321,12 @@ function entryDrift(s) {
   if (!(reach > 0)) return 0;
   const moved = (s.side === "LONG" ? s.price - s.entry : s.entry - s.price);
   return Math.round((moved / reach) * 100);
+}
+
+/** The moment the current run began — the deployment if there is one, else
+    when the app was opened. Everything before it is somebody else's trade. */
+function startedAt() {
+  return DEPLOY.on && DEPLOY.at ? DEPLOY.at : SESSION.startedAt;
 }
 
 /** Timestamp before which an unresolved setup is too old to act on, or 0. */
@@ -2717,6 +2730,9 @@ function emptySignals() {
   // what appears in this list.
   if (DROP.agree) bits.push(`<b>${DROP.agree}</b> failed the ${CFG.minAgree}/4
     agreement filter`);
+  if (DROP.before) bits.push(`<b>${DROP.before}</b> fired before you deployed
+    at ${new Date(startedAt()).toLocaleString(undefined,{day:"numeric",
+    month:"short",hour:"2-digit",minute:"2-digit"})}`);
   if (DROP.stale) bits.push(`<b>${DROP.stale}</b> fired more than
     ${staleLabel()} ago — too old to enter at that price now`);
   if (DROP.weak) bits.push(`<b>${DROP.weak}</b> are on coins where this strategy
@@ -2731,7 +2747,10 @@ function emptySignals() {
     : `None of the ${UNIVERSE.length||CFG.pairs} pairs currently clears the rules
        on ${CFG.signalTf} candles with the ${CFG.trendTf} trend agreeing.`;
 
-  const fix = DROP.stale && DROP.stale >= DROP.total / 2
+  const fix = DROP.before && DROP.before >= DROP.total / 2
+    ? `<button class="btn" onclick="tgl('sinceDeploy',null)">Also show setups
+        from before I deployed</button>`
+    : DROP.stale && DROP.stale >= DROP.total / 2
     ? `<button class="btn" onclick="setv('maxAgeBars',${
         Math.min(200, (CFG.maxAgeBars || 24) * 4)},' candles')">Also show setups
         up to ${Math.min(200, (CFG.maxAgeBars || 24) * 4)} candles old</button>`
@@ -2744,10 +2763,19 @@ function emptySignals() {
     : `<button class="btn" onclick="setHorizon('fast')">Try a faster
         timeframe</button>`;
 
+  const r = signalRate();
   return `<div class="empty" style="text-align:left">${why}
-    <br><br>This list is not limited by when you opened the app — it shows
-    whatever is live on ${CFG.signalTf} candles right now. On a slow timeframe
-    a genuinely fresh setup can take hours to appear.
+    <br><br>${CFG.sinceDeploy
+      ? "Only setups that fired since the deployment started are shown."
+        + (r && r.perDay < 1
+          ? " On " + CFG.signalTf + " candles this strategy fires about "
+            + (r.perDay >= 0.1 ? r.perDay.toFixed(1) + " times a day"
+               : "once every " + Math.round(1 / r.perDay) + " days")
+            + ", so waiting is the normal state. Deploy on Scalp or Fast for a "
+            + "steady stream — more signals, individually worse."
+          : " The scanner is running; nothing has fired yet.")
+      : "Showing whatever is live on " + CFG.signalTf + " candles, including "
+        + "setups that fired before you deployed."}
     </div>${fix}`;
 }
 
@@ -3335,7 +3363,7 @@ const EXPORT_KEYS = [
   "utKey","utAtrLen","ttLen","ttTarget",
   "slAtr","tpAtr","maxLossPct","beAfter","minLev","maxLev","feePct","slipPct",
   "pairs","pairMode","pickBy","sideBias","custom","focus","maxOpen","minShow","maxAgeBars",
-  "alwaysOn","notify","sound","autoRefreshMin",
+  "alwaysOn","notify","sound","autoRefreshMin","sinceDeploy",
   "minWinRate","minRecord","liveOnly",
 ];
 
@@ -4007,6 +4035,10 @@ function liveBlock() {
       ${kv("Every", CFG.autoRefreshMin + " min")}
       ${kv("Next scan", CFG.alwaysOn ? (BUSY ? "running…" : secs + "s") : "—")}
       ${kv("Scans run", SESSION.scans)}
+      ${kv("Counting signals from", CFG.sinceDeploy
+        ? new Date(startedAt()).toLocaleString(undefined,{day:"numeric",
+            month:"short",hour:"2-digit",minute:"2-digit"})
+        : "any time in the scanned window")}
       ${kv("Screen kept awake", WATCHDOG.wake ? "yes" : "no")}
       ${r ? kv("This setup produces", r.perDay >= 1
           ? r.perDay.toFixed(1) + " signals a day"
@@ -4020,6 +4052,8 @@ function liveBlock() {
     <div class="status" style="margin-top:9px">
       <div class="kv"><span class="k">Keep scanning while this page is open</span>
         <button class="sw${CFG.alwaysOn?" on":""}" onclick="toggleAlwaysOn()"></button></div>
+      <div class="kv"><span class="k">Only signals that fired after I deployed</span>
+        <button class="sw${CFG.sinceDeploy?" on":""}" onclick="tgl('sinceDeploy',this)"></button></div>
       <div class="kv"><span class="k">Alert on new signals, targets and stops</span>
         <button class="sw${CFG.notify?" on":""}" onclick="tgl('notify',this)"></button></div>
       <div class="kv"><span class="k">Sound — rising for new, double for a
