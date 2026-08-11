@@ -359,6 +359,10 @@ const CFG = {
   // Scan with your saved setup as well as the live one, every pass.
   dualScan: false,
 
+  // When the two setups disagree on a coin: show both flagged, keep the one
+  // with more evidence behind it, or drop the coin entirely.
+  onConflict: "show",
+
   // Show only what has fired since the deployment started. The strictest
   // possible reading of "fresh": not "recent", but "after I pressed Deploy".
   sinceDeploy: true,
@@ -589,7 +593,8 @@ let OPEN = [], CLOSED = [], MARKET = {majors:[],movers:[]}, FEED = [];
 let UNIVERSE = [], SCANNED = 0, FAILED = 0, WATCH = [];
 /* Why signals did not reach the list. An empty screen should be able to say
    which filter emptied it, with numbers, rather than just "nothing found". */
-let DROP = {old:0, agree:0, dup:0, capped:0, stale:0, weak:0, before:0, total:0};
+let DROP = {old:0, agree:0, dup:0, capped:0, stale:0, weak:0, before:0,
+            conflict:0, total:0};
 /* Signals the filters rejected. Kept so the list can be topped up rather than
    left empty - they are shown marked, never silently mixed in. */
 let SPARE = [];   // WATCH = near misses
@@ -1709,11 +1714,27 @@ function occCrosses(c) {
 }
 
 /* Walk the candles after the signal and see what actually happened. */
+/* Two numbers that decide whether a win was comfortable or a near miss: how
+   far the trade went against you before it resolved, and how far it went in
+   your favour. Both in R -- multiples of the distance to the original stop --
+   so they mean the same thing on every coin.
+
+   Without them, two trades that both reached Target 2 look identical, when one
+   of them nearly stopped you out on the way and will next time. */
 function track(sig, d) {
   const long = sig.side==="LONG";
   let stop = sig.stop;
+  const risk = Math.abs(sig.entry - (sig.initialStop != null ? sig.initialStop : sig.stop));
+  sig.mae = 0;                       // worst against you, in R
+  sig.mfe = 0;                       // best in your favour, in R
   for (let i=sig.idx+1; i<d.c.length; i++) {
     const b=d.c[i];
+    if (risk > 0) {
+      const against = long ? (sig.entry - b.l) : (b.h - sig.entry);
+      const forward = long ? (b.h - sig.entry) : (sig.entry - b.l);
+      if (against > 0) sig.mae = Math.max(sig.mae, +(against / risk).toFixed(2));
+      if (forward > 0) sig.mfe = Math.max(sig.mfe, +(forward / risk).toFixed(2));
+    }
     if (long ? b.l<=stop : b.h>=stop) {
       sig.stop = round(stop, sig.entry);
       sig.price = sig.stop;
@@ -2081,7 +2102,8 @@ function activeSetups() {
 async function run() {
   if (BUSY) return;
   BUSY = true; ERROR = null; SCANNED = 0; FAILED = 0; setDot("busy");
-  DROP = {old:0, agree:0, dup:0, capped:0, stale:0, weak:0, before:0, total:0};
+  DROP = {old:0, agree:0, dup:0, capped:0, stale:0, weak:0, before:0,
+          conflict:0, total:0};
   AUTO.left = AUTO.perScan; AUTO.decided = 0; AUTO.waiting = 0;
   SPARE = [];
   progress(0.01); render();
@@ -2263,7 +2285,55 @@ async function run() {
   }
   for (const s of OPEN) {
     const sides = bySide.get(s.symbol);
-    s.conflict = sides && sides.size > 1;
+    s.conflict = !!(sides && sides.size > 1);
+  }
+
+  // What to do about a disagreement is a judgement, so it is yours. The app
+  // will show both, keep the better-evidenced one, or drop the coin — but it
+  // will never quietly pick a side and present it as if the two had agreed.
+  if (CFG.onConflict !== "show") {
+    const clashing = OPEN.filter((x) => x.conflict);
+    if (clashing.length) {
+      const bySym = new Map();
+      for (const x of clashing) {
+        const list = bySym.get(x.symbol) || [];
+        list.push(x); bySym.set(x.symbol, list);
+      }
+      const drop = new Set();
+      for (const [, list] of bySym) {
+        if (CFG.onConflict === "hide") {
+          for (const x of list) { drop.add(x); DROP.conflict++; }
+          continue;
+        }
+        // "best": more independent backing wins. Agreement first, because it
+        // is about this candle; then how that coin has paid on that side;
+        // then its overall hit rate.
+        const rank = (x) => {
+          const rec = x.rec && x.rec[x.side];
+          return [x.agree || 0,
+                  rec && rec.n >= 3 ? rec.expR : -99,
+                  x.rec && x.rec.n >= 3 ? x.rec.rate : 0];
+        };
+        let keep = list[0];
+        for (const x of list.slice(1)) {
+          const a = rank(x), b = rank(keep);
+          for (let i = 0; i < a.length; i++) {
+            if (a[i] === b[i]) continue;
+            if (a[i] > b[i]) keep = x;
+            break;
+          }
+        }
+        // Nothing to choose between them is not a reason to choose one.
+        const tied = list.every((x) => rank(x).join() === rank(keep).join());
+        if (tied) {
+          for (const x of list) { drop.add(x); DROP.conflict++; }
+          continue;
+        }
+        keep.keptOver = list.filter((x) => x !== keep).map((x) => x.side).join(", ");
+        for (const x of list) if (x !== keep) { drop.add(x); DROP.conflict++; }
+      }
+      if (drop.size) OPEN = OPEN.filter((x) => !drop.has(x));
+    }
   }
 
   DROP.capped = Math.max(0, OPEN.length - CFG.maxOpen);
@@ -2777,7 +2847,11 @@ function card(s, i) {
         >below filter · ${esc(s.belowBar)}</span>` : ""}
       ${s.setup === "mine" ? `<span class="b" style="background:#1d3a5c;color:#9ad2ff"
         >my setup</span>` : ""}
-      ${s.conflict ? `<span class="b" style="background:#4a2317;color:#ffb08a"
+      ${s.mae ? `<span class="b" style="background:var(--sunk);color:#9b9ba3"
+        >${s.mae}R against${s.mfe ? " · " + s.mfe + "R for" : ""}</span>` : ""}
+      ${s.keptOver ? `<span class="b" style="background:#1f3d2a;color:#8ff0c0"
+        >kept over the ${esc(s.keptOver)}</span>` : ""}
+      ${s.conflict && !s.keptOver ? `<span class="b" style="background:#4a2317;color:#ffb08a"
         >conflict · the other setup says ${s.side === "LONG" ? "SHORT" : "LONG"}</span>`
         : ""}
       ${s.agree != null ? `<span class="b" style="background:${
@@ -3044,6 +3118,96 @@ function errBox() {
    network or region blocks them — try mobile data instead of wifi, or a VPN.</div>`;
 }
 
+/* =========================================================================
+   THE DAY'S NUMBERS
+
+   Accuracy on its own flatters. A strategy that reaches its first target seven
+   times in ten still loses money if the three losers give back more than the
+   seven winners make, so the hit rate and the expectancy are shown together
+   and neither is allowed to stand alone.
+
+   Everything is in R -- multiples of the distance to the original stop --
+   because a percentage on 20x leverage and the same percentage on 3x are not
+   comparable, and averaging them produces a number that means nothing.
+   ========================================================================= */
+function dayKey(ms) {
+  const d = new Date(ms);
+  return d.getFullYear() + "-" + String(d.getMonth() + 1).padStart(2, "0")
+       + "-" + String(d.getDate()).padStart(2, "0");
+}
+
+function rOf(s) {
+  const ref = s.initialStop != null ? s.initialStop : s.stop;
+  const risk = Math.abs(s.entry - ref) / s.entry * 100;
+  if (!(risk > 0)) return null;
+  return (s.roi / (s.leverage || 1)) / risk;
+}
+
+/** Closed trades grouped by the day they finished, newest first. */
+function dailyKpis(list, days) {
+  const by = new Map();
+  for (const s of list) {
+    if (!s.closedAt) continue;
+    const k = dayKey(s.closedAt);
+    if (!by.has(k)) by.set(k, []);
+    by.get(k).push(s);
+  }
+  const out = [];
+  for (const [day, rows] of [...by.entries()].sort((a, b) => b[0].localeCompare(a[0]))) {
+    const rs = rows.map(rOf).filter((v) => v != null);
+    const wins = rows.filter((s) => s.hits >= 1);
+    const losses = rows.filter((s) => s.hits < 1);
+    const wR = wins.map(rOf).filter((v) => v != null);
+    const lR = losses.map(rOf).filter((v) => v != null);
+    const sum = (a) => a.reduce((x, y) => x + y, 0);
+    const gain = sum(wR.filter((v) => v > 0));
+    const pain = Math.abs(sum(lR.filter((v) => v < 0)));
+    out.push({
+      day, n: rows.length, tp1: wins.length,
+      rate: rows.length ? Math.round(wins.length / rows.length * 100) : 0,
+      avgWin: wR.length ? +(sum(wR) / wR.length).toFixed(2) : 0,
+      avgLoss: lR.length ? +(sum(lR) / lR.length).toFixed(2) : 0,
+      exp: rs.length ? +(sum(rs) / rs.length).toFixed(2) : 0,
+      pf: pain > 0 ? +(gain / pain).toFixed(2) : (gain > 0 ? Infinity : 0),
+      mae: rows.length ? +(sum(rows.map((s) => s.mae || 0)) / rows.length).toFixed(2) : 0,
+      worstWinMae: wins.length ? Math.max(...wins.map((s) => s.mae || 0)) : 0,
+    });
+    if (out.length >= (days || 7)) break;
+  }
+  return out;
+}
+
+function kpiBlock() {
+  const rows = dailyKpis(CLOSED, 7);
+  if (!rows.length) {
+    return `<div class="segnote">No trades have finished yet. A day appears
+      here once something has reached a target or a stop — not when it fires.</div>`;
+  }
+  const fmtR = (v) => (v > 0 ? "+" : "") + v + "R";
+  const body = rows.map((d) => `<div class="card" style="margin-bottom:8px">
+      <div class="kv"><span class="k" style="font-weight:800">${esc(d.day)}</span>
+        <span class="v" style="color:${d.exp > 0 ? "var(--green2)" : "var(--red2)"}"
+          >${fmtR(d.exp)} per trade</span></div>
+      ${kv("Finished", d.n + " trade" + (d.n === 1 ? "" : "s"))}
+      ${kv("Reached TP1", d.tp1 + " of " + d.n + " · " + d.rate + "%")}
+      ${kv("Average win / loss", fmtR(d.avgWin) + " / " + fmtR(d.avgLoss))}
+      ${kv("Profit factor", d.pf === Infinity ? "no losses" : d.pf)}
+      ${kv("Typical drawdown before resolving", d.mae + "R")}
+      ${d.worstWinMae ? kv("Closest call on a winner", d.worstWinMae + "R against") : ""}
+    </div>`).join("");
+  const all = rows.reduce((a, d) => ({ n: a.n + d.n, e: a.e + d.exp * d.n }), { n: 0, e: 0 });
+  const avg = all.n ? +(all.e / all.n).toFixed(2) : 0;
+  return `<div class="segnote">Everything in R — one R is the distance from
+      entry to the original stop. Hit rate and expectancy are shown together
+      because either one alone can flatter a losing strategy.</div>
+    ${body}
+    <div class="status">${kv("Across these " + rows.length + " days",
+      all.n + " trades · " + (avg > 0 ? "+" : "") + avg + "R per trade")}</div>
+    <div class="hint">Expectancy is the number that decides whether this is
+      worth trading. Above zero and the winners outweigh the losers; below zero
+      a high hit rate is just losing slowly.</div>`;
+}
+
 function resultsView() {
   // The backtester is a manual instrument. In Automatic the search is already
   // doing that job, and a second set of the same knobs is the confusion.
@@ -3071,6 +3235,7 @@ function resultsView() {
   return head + `<div class="stats">${stat(st.n,"Closed")}${stat(st.winRate+"%","TP1 rate")}
     ${stat(st.avgT,"Avg TPs")}${stat(st.n?sgn(st.avgRoi):"—","Avg ROI")}</div>
     ${spark?"<h2>Equity</h2>"+spark:""}
+    <h2>Day by day</h2>${kpiBlock()}
     ${perfBlock()}
     <h2>Hit rates</h2><div class="status">${rates}${bw}</div>
     <h2>History</h2>${CLOSED.length? CLOSED.map(card).join("")
@@ -3603,6 +3768,7 @@ const EXPORT_KEYS = [
   "slAtr","tpAtr","maxLossPct","beAfter","minLev","maxLev","feePct","slipPct",
   "pairs","pairMode","pickBy","sideBias","custom","focus","maxOpen","minShow","maxAgeBars",
   "alwaysOn","notify","sound","autoRefreshMin","sinceDeploy","dualScan",
+  "onConflict",
   "minWinRate","minRecord","liveOnly",
 ];
 
@@ -4303,6 +4469,12 @@ function liveBlock() {
         MYSETUP ? "" : " — none saved yet"}</span>
         <button class="sw${CFG.dualScan && MYSETUP ? " on" : ""}"
           onclick="${MYSETUP ? "tgl('dualScan',this)" : "saveMySetup()"}"></button></div>
+      <div class="kv"><span class="k">When the two setups disagree</span>
+        <span class="v"><select onchange="setStr('onConflict',this.value)">${
+          [["show","Show both, flagged"],["best","Keep the stronger one"],
+           ["hide","Skip that coin"]].map(([k,l]) =>
+            `<option value="${k}"${k===CFG.onConflict?" selected":""}>${l}</option>`
+          ).join("")}</select></span></div>
       <div class="kv"><span class="k">Only signals that fired after I deployed</span>
         <button class="sw${CFG.sinceDeploy?" on":""}" onclick="tgl('sinceDeploy',this)"></button></div>
       <div class="kv"><span class="k">Alert on new signals, targets and stops</span>
