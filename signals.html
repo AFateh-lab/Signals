@@ -522,6 +522,11 @@ const CFG = {
   modOff: [],              // modules the user has switched off
   modGate: 0,               // confidence a signal must reach, 0 = off
 
+  matrixAuto: true,        // keep scoring cells in the background
+  matrixEveryMin: 12,      // how often the next few coins get scored
+  evoAuto: false,          // run a generation on a schedule
+  evoEveryHours: 6,
+
   matrixCoins: 4,          // coins the matrix scores per pass
   matrixBars: 1000,        // candles each cell is replayed over
   matrixTop: 5,            // cells shortlisted per coin
@@ -2829,6 +2834,11 @@ function toggleBot(id) {
   if (!b) return;
   b.on = !b.on;
   if (b.on && !b.startedAt) b.startedAt = Date.now();
+  if (b.on && b.mode === "auto" && !b.nextTune) {
+    // Stagger the first search so switching six bots on does not queue six
+    // full searches back to back.
+    b.nextTune = Date.now() + (1 + BOTS.indexOf(b)) * 60000;
+  }
   saveBots(); render(true); refresh();
 }
 
@@ -3313,6 +3323,9 @@ function evoBlock() {
       ${kv("Champions", EVO.champs.length + " of " + CFG.evoChamps)}
       ${kv("Variants per champion", CFG.evoMutations)}
       ${kv("Margin to take a place", "×" + CFG.evoMargin)}
+      <div class="kv"><span class="k">Run a generation automatically</span>
+        <button class="sw${CFG.evoAuto ? " on" : ""}"
+          onclick="CFG.evoAuto=!CFG.evoAuto;writeHash();render(true)"></button></div>
       ${EVO.running ? kv("Working on", esc(EVO.step || "…")) : ""}
       <button class="btn ${EVO.running ? "" : "gold"}" style="margin-top:10px"
         onclick="${EVO.running ? "EVO.cancel=true" : "evoRun()"}">${
@@ -3532,6 +3545,9 @@ function matrixView() {
     ${kv("Cells that cleared the wall", passing + " of " + MATRIX.cell.size)}
     ${kv("Full passes", MATRIX.pass + (MATRIX.at ? " · last " + age(MATRIX.at) : ""))}
     ${MATRIX.running ? kv("Working on", esc(MATRIX.step || "…")) : ""}
+    <div class="kv"><span class="k">Keep scoring in the background</span>
+      <button class="sw${CFG.matrixAuto ? " on" : ""}"
+        onclick="CFG.matrixAuto=!CFG.matrixAuto;writeHash();render(true)"></button></div>
     <button class="btn ${MATRIX.running ? "" : "gold"}" style="margin-top:10px"
       onclick="${MATRIX.running ? "MATRIX.cancel=true" : "matrixRun()"}">${
       MATRIX.running ? "Stop" : "Score the next " + CFG.matrixCoins
@@ -4928,7 +4944,7 @@ async function run() {
   if (BUSY) return;
   BUSY = true; ERROR = null; SCANNED = 0; FAILED = 0; setDot("busy");
   DROP = {old:0, agree:0, dup:0, capped:0, stale:0, weak:0, before:0,
-          conflict:0, total:0};
+          conflict:0, chase:0, conf:0, risk:0, total:0};
   AUTO.left = AUTO.perScan; AUTO.decided = 0; AUTO.waiting = 0;
   SPARE = [];
   progress(0.01); render();
@@ -5143,13 +5159,13 @@ async function run() {
       }
     }
     if (s.chase && s.chase.verdict === "late") {
-      DROP.weak++;
+      DROP.chase++;
       s.belowBar = "too late · " + s.chase.why[0];
       SPARE.push(s);
       continue;
     }
     if (CFG.modGate && s.confidence != null && s.confidence < CFG.modGate) {
-      DROP.weak++;
+      DROP.conf++;
       s.belowBar = "confidence " + s.confidence;
       SPARE.push(s);
       continue;
@@ -5279,7 +5295,7 @@ async function run() {
     for (const s of OPEN) {
       if (s.belowBar) continue;
       const no = riskBlock(s, state, taken);
-      if (no) { s.belowBar = no; s.blocked = true; DROP.weak++; }
+      if (no) { s.belowBar = no; s.blocked = true; DROP.risk++; }
       else taken.push(s);
     }
     RISK = state;
@@ -6051,6 +6067,27 @@ function quickBar() {
 }
 
 /* An empty list should say which filter emptied it, with the numbers. */
+/* One tap out of an empty list. It says what it changed, because a button
+   that silently rewrites nine settings is worse than no button. */
+function openTheTaps() {
+  setRate("often");
+  CFG.maxAgeBars = 96;
+  CFG.minAgree = 0;
+  CFG.modGate = 0;
+  CFG.minWinRate = 0;
+  CFG.minScore = 4;
+  CFG.chaseMaxR = 3;
+  CFG.chaseWarnR = 1.2;
+  CFG.sinceDeploy = false;
+  CFG.minShow = 5;
+  // A bot switched on five minutes ago has no history of its own, so its clock
+  // hides everything. Wind them back a day.
+  for (const b of BOTS) if (b.startedAt) b.startedAt = Date.now() - 86400000;
+  saveBots(); writeHash();
+  toast("Filters opened up — rescanning");
+  refresh();
+}
+
 function emptySignals() {
   if (BUSY) {
     return `<div class="empty">Scanning ${SCANNED} of
@@ -6068,8 +6105,25 @@ function emptySignals() {
     ${staleLabel()} ago — too old to enter at that price now`);
   if (DROP.weak) bits.push(`<b>${DROP.weak}</b> are on coins where this strategy
     has not reached its first target ${CFG.minWinRate}% of the time lately`);
+  if (DROP.chase) bits.push(`<b>${DROP.chase}</b> had already run too far past
+    their entry price to take now`);
+  if (DROP.conf) bits.push(`<b>${DROP.conf}</b> scored under your confidence
+    gate of ${CFG.modGate}`);
+  if (DROP.risk) bits.push(`<b>${DROP.risk}</b> were stopped by the risk gate`);
   if (DROP.dup) bits.push(`<b>${DROP.dup}</b> repeated a pair another bot had
     already found, or were older signals on a pair with a newer one`);
+
+  // The single most useful button in the app when the list is empty. Every
+  // gate here was added for a good reason, and stacked together they can shut
+  // the list down completely — which is worse than useless, because you cannot
+  // tell a quiet market from an over-tight filter.
+  const loosen = `<button class="btn gold" style="margin-top:12px"
+      onclick="openTheTaps()">Loosen everything and show me signals</button>
+    <div class="hint">Sets the filters to Frequent, widens the freshness window,
+      turns off the agreement and confidence gates, relaxes the anti-chase rule,
+      and lets signals from before your bots started count. More signals, and a
+      higher share of them wrong — that is the trade, and it is the right one
+      while you are still learning what this thing does.</div>`;
 
   const why = bits.length
     ? `The scan found <b>${DROP.total}</b> unresolved setups across
@@ -6095,7 +6149,7 @@ function emptySignals() {
         timeframe</button>`;
 
   const r = signalRate();
-  return `<div class="empty" style="text-align:left">${why}
+  return loosen + `<div class="empty" style="text-align:left">${why}
     <br><br>${CFG.sinceDeploy
       ? "Only setups that fired since the deployment started are shown."
         + (r && r.perDay < 1
@@ -6794,7 +6848,8 @@ const EXPORT_KEYS = [
   "alwaysOn","notify","sound","autoRefreshMin","sinceDeploy","dualScan",
   "onConflict",
   "minWinRate","minRecord","liveOnly","botsPerScan","botBtPairs","botBtBars",
-  "matrixCoins","matrixBars","matrixTop","modOff","modGate",
+  "matrixCoins","matrixBars","matrixTop","matrixAuto","matrixEveryMin",
+  "evoAuto","evoEveryHours","modOff","modGate",
   "chaseOn","chaseWarnR","chaseMaxR","chaseVwapBars","chaseVwapAtr",
   "chaseExtAtr","chaseRetestR","exitBrain","exitPartial","exitOnFlip",
   "exitTrailAfter","exitTrailAtr",
@@ -7369,6 +7424,9 @@ function runningNow() {
           : "No bot is switched on, so it is scanning with whatever the screen "
             + "is set to.")
       : "Nothing is scanning. Press Run below to start the bots."}</div>
+    ${ENGINE.on && !OPEN.filter((x) => !x.belowBar && !entryGone(x)).length
+      ? `<button class="btn gold" style="margin-top:10px"
+          onclick="openTheTaps()">No signals? Loosen everything</button>` : ""}
   </div>`;
 }
 
@@ -10843,6 +10901,31 @@ setInterval(()=>{
   if (!ENGINE.on && !CFG.alwaysOn) return;
   if (Date.now()-LASTRUN > CFG.autoRefreshMin*60000) refresh();
 }, 5000);
+
+/* The slow jobs, on their own clock.
+   Each bot already recorded when its next search was due — and nothing ever
+   read that field, so a bot set to find its own best period searched once when
+   you pressed the button and never again. One job at a time, and never while
+   a scan is running: three heavy jobs on one thread is what makes a phone
+   stop responding. */
+setInterval(() => {
+  if (!ENGINE.on) return;
+  if (document.visibilityState !== "visible") return;
+  if (BUSY || OPT.running || BEST.running || DEPLOY.working
+      || MATRIX.running || EVO.running || WHALE.running) return;
+  const now = Date.now();
+
+  const due = enabledBots().find((b) => b.mode === "auto" && b.nextTune
+                                     && now >= b.nextTune);
+  if (due) { botSearch(due.id); return; }
+
+  if (CFG.matrixAuto && now - (MATRIX.at || 0) > CFG.matrixEveryMin * 60000) {
+    matrixRun(); return;
+  }
+  if (CFG.evoAuto && now - (EVO.at || 0) > CFG.evoEveryHours * 3600000) {
+    evoRun(); return;
+  }
+}, 20000);
 // The wake lock is dropped by the browser whenever the tab is backgrounded,
 // so it has to be taken again on the way back.
 document.addEventListener("visibilitychange", ()=>{
