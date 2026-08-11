@@ -82,6 +82,18 @@ h2:first-child{margin-top:2px}
 .card.open .why{display:block}
 .hint{color:#5e5e66;font-size:10.5px;text-align:center;margin:2px 0 12px;
  line-height:1.5}
+.mxwrap{overflow-x:auto;-webkit-overflow-scrolling:touch;margin-bottom:6px}
+.mxt{border-collapse:collapse;font-size:11px;width:100%}
+.mxt th{color:var(--dim);font-weight:600;padding:4px 5px;text-align:left;
+  white-space:nowrap;font-size:10.5px}
+.mxt td{padding:4px 5px;text-align:center;border:1px solid #1e1e26;
+  min-width:30px;color:var(--txt)}
+.mxt td.none{color:#3a3a45}
+.mxt td.bad{background:#1a1a20;color:#5e5e66}
+.mxt td.ok{font-weight:800;color:#05130c}
+.mxt.lb td{text-align:left;border:0;border-bottom:1px solid #1e1e26;
+  color:var(--dim)}
+.mxt.lb th{border-bottom:1px solid #1e1e26;color:var(--txt)}
 .stepno{display:inline-block;font-size:9.5px;font-weight:800;letter-spacing:.10em;
  text-transform:uppercase;color:var(--gold);border:1px solid rgba(240,185,11,.35);
  border-radius:99px;padding:2px 8px;margin-bottom:8px}
@@ -303,6 +315,7 @@ Leveraged trading can lose more than your deposit.</footer>
 <nav>
  <button data-tab="home" class="on" onclick="go('home')"><svg viewBox="0 0 24 24"><path d="M3 10.5 12 3l9 7.5"/><path d="M5 9.5V21h14V9.5"/></svg>Home</button>
  <button data-tab="open" onclick="go('open')"><svg viewBox="0 0 24 24"><path d="M3 17l5-6 4 3 5-7 4 4"/><path d="M3 21h18"/></svg>Signals</button>
+ <button data-tab="matrix" onclick="go('matrix')"><svg viewBox="0 0 24 24"><rect x="3" y="3" width="7" height="7" rx="1.5"/><rect x="14" y="3" width="7" height="7" rx="1.5"/><rect x="3" y="14" width="7" height="7" rx="1.5"/><rect x="14" y="14" width="7" height="7" rx="1.5"/></svg>Matrix</button>
  <button data-tab="chart" onclick="go('chart')"><svg viewBox="0 0 24 24"><path d="M6 4v16M6 8h3v8H6zM13 3v18M13 7h3v10h-3z"/><path d="M3 21h18"/></svg>Chart</button>
  <button data-tab="closed" onclick="go('closed')"><svg viewBox="0 0 24 24"><rect x="5" y="3" width="14" height="18" rx="2.5"/><path d="M9 8h6M9 12h6M9 16h3"/></svg>Results</button>
  <button data-tab="profile" onclick="go('profile')"><svg viewBox="0 0 24 24"><circle cx="12" cy="8.5" r="3.7"/><path d="M4.5 20c1.4-4 4.2-5.6 7.5-5.6S18.1 16 19.5 20"/></svg>Settings</button>
@@ -456,6 +469,63 @@ const CFG = {
   patTargets: [0.5, 1.0, 1.5, 2.0, 3.0],   // in pattern heights, not ATR
 
   botsPerScan: 4,          // how many bots get a turn each scan
+  // Breakout. Close through the highest high / lowest low of N bars.
+  brkLen: 20,              // the channel length
+  brkAtrStop: 1.5,         // stop distance when the channel is too far
+  brkMinAdx: 18,           // a breakout in a dead market is a fakeout
+
+  // RSI. Coming back out of an extreme, not sitting in one.
+  rsiLen: 14,
+  rsiLow: 30, rsiHigh: 70,
+  rsiWithTrend: true,      // only take the side the EMA stack is already on
+
+  // Mean reversion. How many standard deviations from the mean is "too far".
+  mrLen: 20,
+  mrZ: 2.2,
+  mrMaxAdx: 22,            // fading a strong trend is how you get run over
+
+  // Momentum. Rate of change plus an expanding MACD histogram.
+  momLen: 12,
+  momPct: 2.5,             // % move over that many bars to count as momentum
+  momMinAdx: 20,
+
+  // Anti-chase
+  chaseOn: true,
+  chaseWarnR: 0.5,         // past this much R, suggest waiting for a retest
+  chaseMaxR: 1.2,          // past this, the trade is gone
+  chaseVwapBars: 40,
+  chaseVwapAtr: 2.5,       // ATR above VWAP that counts as stretched
+  chaseExtAtr: 6,          // how far a leg can run before it is extended
+  chaseRetestR: 0.2,       // where the retest level sits, in R from entry
+
+  // Exit brain
+  exitBrain: true,
+  exitPartial: 0.4,        // share banked at the first target
+  exitOnFlip: true,        // cut when momentum turns while ahead
+  exitTrailAfter: 1.5,     // R of peak profit before trailing starts
+  exitTrailAtr: 2.0,
+
+  whaleCoins: 3,           // coins the whale engine reads per pass
+  whaleOn: false,          // it costs five requests a coin, so it is opt-in
+  whaleTtlMin: 12,         // how long a reading is considered current
+
+  entryZoneR: 0.33,        // how far past entry still counts as takeable, in R
+  evoChamps: 6,            // champions carried between generations
+  evoMutations: 6,         // variants tried per champion per generation
+  evoMargin: 1.15,         // a child must beat its parent by this much
+  evoRetireAfter: 12,      // live trades before a negative record retires a bot
+  evoPatience: 3,          // generations a champion may fail before retirement
+  dayLossR: 0,             // stop new entries after this much lost today, 0 = off
+  ddStopR: 0,              // stop after this far off the peak, 0 = off
+  maxSameSide: 0,          // most trades on one side at once, 0 = off
+
+  modOff: [],              // modules the user has switched off
+  modGate: 0,               // confidence a signal must reach, 0 = off
+
+  matrixCoins: 4,          // coins the matrix scores per pass
+  matrixBars: 1000,        // candles each cell is replayed over
+  matrixTop: 5,            // cells shortlisted per coin
+
   botBtPairs: 12,          // pairs in a bot's own backtest
   botBtBars: 1000,         // candles of history it replays
 };
@@ -1676,6 +1746,140 @@ function patSignal(sym, d, hit) {
   return sig;
 }
 
+/* =========================================================================
+   FOUR MORE STRATEGIES, one shape.
+
+   Each returns a plain list of entries — bar index, side, and optionally its
+   own stop. Everything after that (sizing, targets, tracking) is shared, so a
+   new strategy is a scan function and nothing else. The four here are the
+   standard crypto reads that were missing: breakout, RSI, mean reversion and
+   momentum.
+
+   Every one of them is gated on ADX, because the same rule is right or wrong
+   depending on whether the market is trending. A breakout in a flat market is
+   a fakeout; a fade in a strong trend is standing in front of it. Which side
+   of that line you are on is the single most useful thing ADX tells you, and
+   it is why the same indicator appears in all four with different signs.
+   ========================================================================= */
+
+/* Breakout — Donchian channel. Close above the highest high of N bars is a
+   long; below the lowest low is a short. The stop is the other side of the
+   channel where that is close enough to be sane, ATR otherwise. */
+function brkScan(d) {
+  const out = [], c = d.c, n = CFG.brkLen;
+  if (c.length < 220) return out;
+  for (let i = 210; i < c.length - 1; i++) {
+    if (!(d.adx[i] >= CFG.brkMinAdx)) continue;
+    let hh = -Infinity, ll = Infinity;
+    for (let k = i - n; k < i; k++) { hh = Math.max(hh, c[k].h); ll = Math.min(ll, c[k].l); }
+    const px = d.close[i], prev = d.close[i-1], a = d.atr[i];
+    if (!(a > 0)) continue;
+    if (px > hh && prev <= hh) {
+      const stop = (px - ll) < 3.5 * a ? ll : px - CFG.brkAtrStop * a;
+      out.push({ idx: i, side: "LONG", stop, tag: "Breakout " + n,
+        why: [`closed above the ${n}-bar high`, `ADX ${Math.round(d.adx[i])} — trending`,
+              "stop under the channel"] });
+    } else if (px < ll && prev >= ll) {
+      const stop = (hh - px) < 3.5 * a ? hh : px + CFG.brkAtrStop * a;
+      out.push({ idx: i, side: "SHORT", stop, tag: "Breakdown " + n,
+        why: [`closed below the ${n}-bar low`, `ADX ${Math.round(d.adx[i])} — trending`,
+              "stop above the channel"] });
+    }
+  }
+  return out;
+}
+
+/* RSI — the signal is leaving the extreme, not being in it. An oversold coin
+   can stay oversold for a week; the turn is the tradable part. */
+function rsiScan(d) {
+  const out = [], r = d.rsi;
+  if (d.c.length < 220) return out;
+  for (let i = 210; i < d.c.length - 1; i++) {
+    const up = r[i-1] <= CFG.rsiLow && r[i] > CFG.rsiLow;
+    const dn = r[i-1] >= CFG.rsiHigh && r[i] < CFG.rsiHigh;
+    if (!up && !dn) continue;
+    const side = up ? "LONG" : "SHORT";
+    if (CFG.rsiWithTrend) {
+      const bull = d.ef[i] > d.em[i];
+      if ((side === "LONG") !== bull) continue;
+    }
+    out.push({ idx: i, side, stop: null,
+      tag: "RSI " + (up ? "up out of " + CFG.rsiLow : "down out of " + CFG.rsiHigh),
+      why: [`RSI(${CFG.rsiLen}) crossed back ${up ? "above " + CFG.rsiLow
+                                                : "below " + CFG.rsiHigh}`,
+            `RSI now ${Math.round(r[i])}`,
+            CFG.rsiWithTrend ? "and the EMA stack agrees" : "trend filter off"] });
+  }
+  return out;
+}
+
+/* Mean reversion — a z-score fade. Only in a quiet market: ADX has to be low,
+   because fading a strong trend is the fastest way to lose money politely. */
+function mrScan(d) {
+  const out = [], n = CFG.mrLen, close = d.close;
+  if (close.length < 220) return out;
+  for (let i = 210; i < close.length - 1; i++) {
+    if (!(d.adx[i] <= CFG.mrMaxAdx)) continue;
+    let sum = 0;
+    for (let k = i - n; k < i; k++) sum += close[k];
+    const mean = sum / n;
+    let v = 0;
+    for (let k = i - n; k < i; k++) v += (close[k] - mean) ** 2;
+    const sd = Math.sqrt(v / n);
+    if (!(sd > 0)) continue;
+    const z = (close[i] - mean) / sd, zPrev = (close[i-1] - mean) / sd;
+    // stretched, and starting to come back
+    if (zPrev < -CFG.mrZ && z > zPrev) {
+      out.push({ idx: i, side: "LONG", stop: close[i] - Math.abs(z) * sd * 0.6,
+        tag: "Mean reversion −" + CFG.mrZ + "σ",
+        why: [`${Math.abs(z).toFixed(1)} standard deviations below the ${n}-bar mean`,
+              `ADX ${Math.round(d.adx[i])} — no strong trend to fight`,
+              "target is the mean"] });
+    } else if (zPrev > CFG.mrZ && z < zPrev) {
+      out.push({ idx: i, side: "SHORT", stop: close[i] + Math.abs(z) * sd * 0.6,
+        tag: "Mean reversion +" + CFG.mrZ + "σ",
+        why: [`${z.toFixed(1)} standard deviations above the ${n}-bar mean`,
+              `ADX ${Math.round(d.adx[i])} — no strong trend to fight`,
+              "target is the mean"] });
+    }
+  }
+  return out;
+}
+
+/* Momentum — a real move over N bars, with the MACD histogram still expanding
+   so it is continuing rather than exhausting. */
+function momScan(d) {
+  const out = [], n = CFG.momLen, close = d.close;
+  if (close.length < 220) return out;
+  let last = -999;
+  for (let i = 210; i < close.length - 1; i++) {
+    if (i - last < CFG.cooldownBars) continue;
+    if (!(d.adx[i] >= CFG.momMinAdx)) continue;
+    const roc = (close[i] - close[i-n]) / close[i-n] * 100;
+    const h = d.mhist, expanding = Math.abs(h[i]) > Math.abs(h[i-1]);
+    if (roc >= CFG.momPct && h[i] > 0 && expanding) {
+      out.push({ idx: i, side: "LONG", stop: null, tag: "Momentum +" + roc.toFixed(1) + "%",
+        why: [`+${roc.toFixed(1)}% over ${n} bars`, "MACD histogram positive and growing",
+              `ADX ${Math.round(d.adx[i])}`] });
+      last = i;
+    } else if (roc <= -CFG.momPct && h[i] < 0 && expanding) {
+      out.push({ idx: i, side: "SHORT", stop: null, tag: "Momentum " + roc.toFixed(1) + "%",
+        why: [`${roc.toFixed(1)}% over ${n} bars`, "MACD histogram negative and growing",
+              `ADX ${Math.round(d.adx[i])}`] });
+      last = i;
+    }
+  }
+  return out;
+}
+
+/* One dispatch for all four, so adding the fifth is a scan function and a
+   line in this table rather than an edit in six places. */
+const SIMPLE_STRATS = { brk: brkScan, rsi: rsiScan, mr: mrScan, mom: momScan };
+
+function simpleSignals(sym, d, hit) {
+  return buildSignal(sym, d, hit.idx, hit.side, hit.tag, hit.why, hit.stop);
+}
+
 /* Strategy 2: Open/Close Cross.
    The chosen MA is applied to the open series and the close series on a higher
    timeframe (base x multiplier). Close MA crossing above the open MA is a long,
@@ -1863,9 +2067,11 @@ function agreementAt(votes, i, side) {
 const AUTO = { ttl: 6 * 3600 * 1000, perScan: 6, left: 0, decided: 0, waiting: 0 };
 
 const AUTOPICK = new Map();          // symbol -> {strat, score, at}
-const AUTO_STRATS = ["confluence", "occ", "ut", "tt", "sr", "pat"];
+const AUTO_STRATS = ["confluence", "occ", "ut", "tt", "sr", "pat",
+                     "brk", "rsi", "mr", "mom"];
 const STRAT_SHORT = {confluence:"Confluence", occ:"Open/Close", sr:"S&R",
-                     ut:"UT Bot", tt:"Target Trend", pat:"Patterns"};
+                     ut:"UT Bot", tt:"Target Trend", pat:"Patterns",
+                     brk:"Breakout", rsi:"RSI", mr:"Mean rev", mom:"Momentum"};
 
 /** R-multiple expectancy of a set of tracked signals. */
 function autoScore(sigs, fromIdx) {
@@ -1947,6 +2153,13 @@ function autoSignals(sym, d, h, ltf) {
       if (CFG.requireHtf && htfBias(h, d.c[hit.idx].t) !== sig.side) continue;
       track(sig, d); out.push(sig);
     }
+  } else if (SIMPLE_STRATS[CFG.strategy]) {
+    for (const hit of SIMPLE_STRATS[CFG.strategy](d)) {
+      const sig = simpleSignals(sym, d, hit);
+      if (!sig) continue;
+      if (CFG.requireHtf && htfBias(h, d.c[hit.idx].t) !== sig.side) continue;
+      track(sig, d); out.push(sig);
+    }
   } else {
     let last = -999;
     for (let i = 210; i < d.c.length - 1; i++) {
@@ -1993,6 +2206,10 @@ function occCrosses(c) {
 
    Without them, two trades that both reached Target 2 look identical, when one
    of them nearly stopped you out on the way and will next time. */
+/* track() decides the outcome under the plain ladder. The exit brain replays
+   the same trade under managed exits so the two can be compared — see
+   exitCompare. Wrapped rather than merged so the baseline stays untouched:
+   a comparison where the baseline moved is not a comparison. */
 function track(sig, d) {
   const long = sig.side==="LONG";
   let stop = sig.stop;
@@ -2049,6 +2266,15 @@ function track(sig, d) {
                    sig.leverage);
   return sig;
 }
+
+/* Every path out of track() lands here, so the comparison cannot be skipped
+   by whichever branch closed the trade. */
+const _track = track;
+track = function (sig, d) {
+  const out = _track(sig, d);
+  if (CFG.exitBrain) { try { exitCompare(out, d); } catch (e) {} }
+  return out;
+};
 
 /* The auto-pilot swaps CFG over to whichever strategy this coin picked, and
    the settings that come with it. The swap has to be undone on every exit
@@ -2138,6 +2364,12 @@ async function scanSymbolBody(sym, __st) {
     if (!sig) return null;
     const a = agreementAt(votes, sig.idx, sig.side);
     sig.agree = a.n; sig.agreeOf = a.of; sig.voters = a.names;
+    // Every module reads the signal at the moment it fired, and the readings
+    // travel with it. That is what makes the measurement possible later: when
+    // this trade resolves, we know exactly what each module said beforehand.
+    sig.adxAt = d.adx[sig.idx];
+    if (CFG.chaseOn) sig.chase = chaseCheck(sym, d, sig.idx, sig);
+    moduleRead(sym, d, sig.idx, sig, h);
     if (autoKeep) {
       sig.autoStrat = CFG.strategy;
       sig.tag += " · " + (STRAT_SHORT[CFG.strategy] || CFG.strategy);
@@ -2222,6 +2454,30 @@ async function scanSymbolBody(sym, __st) {
       const line = trend[last] ? lower[last] : upper[last];
       near = {symbol: sym, side: trend[last] ? "LONG":"SHORT",
               gap: Math.abs((d.close[last]-line)/d.close[last]*100), agrees: true};
+    }
+    if (autoKeep) for (const k in autoKeep) CFG[k] = autoKeep[k];
+    if (__st.done) __st.done();
+    return {found, near};
+  }
+
+  if (SIMPLE_STRATS[CFG.strategy]) {
+    const hits = SIMPLE_STRATS[CFG.strategy](d);
+    for (const hit of hits) {
+      const sig = gate(simpleSignals(sym, d, hit));
+      if (!sig) continue;
+      if (CFG.requireHtf && htfBias(h, d.c[hit.idx].t) !== sig.side) continue;
+      track(sig, d);
+      found.push(sig);
+    }
+    const lastB = d.c.length - 2;
+    if (lastB > 0) {
+      // how far from firing: distance to the level the rule watches
+      const px = d.close[lastB];
+      const g = CFG.strategy === "rsi"
+        ? Math.abs(d.rsi[lastB] - (d.rsi[lastB] < 50 ? CFG.rsiLow : CFG.rsiHigh))
+        : Math.abs(d.atrPct[lastB] || 0);
+      near = { symbol: sym, side: d.ef[lastB] > d.em[lastB] ? "LONG" : "SHORT",
+               gap: g, agrees: true };
     }
     if (autoKeep) for (const k in autoKeep) CFG[k] = autoKeep[k];
     if (__st.done) __st.done();
@@ -2337,6 +2593,8 @@ const SETUP_KEYS = [
   "cooldownBars", "occMaType", "occMaLen", "occMult", "occExitOnCross",
   "utKey", "utAtrLen", "ttLen", "ttTarget",
   "srPivot", "srZoneAtr", "srMinTouch", "srMode", "srZoneStop", "srBreakAtr",
+  "brkLen","brkAtrStop","brkMinAdx","rsiLen","rsiLow","rsiHigh","rsiWithTrend",
+  "mrLen","mrZ","mrMaxAdx","momLen","momPct","momMinAdx",
   "patPivot", "patTol", "patFlat", "patMaxAge", "patCooldown",
   "patMinHeight", "patMinSpan", "patFlagRun", "patFlagPause", "patFlagAtr", "patCupBars",
   "patTargets",
@@ -2418,7 +2676,7 @@ function newBot(n, from) {
     // scanner; freezing it meant a stale snapshot quietly overrode every
     // deploy on the next scan.
     follow: false,
-    mode: "fixed",                 // "fixed" = yours; "auto" = re-tunes itself
+    mode: "auto",                  // it finds its own best chart period
     cfg: snapshotSetup(from),
     startedAt: 0,                  // its clock: nothing older than this counts
     retuneHours: 6,
@@ -2514,16 +2772,16 @@ function rateBlock() {
    Deliberately spread across speeds. A 15m bot and a 4h bot disagreeing is
    information; two 1h bots disagreeing is mostly noise. */
 const BOT_LINEUP = [
-  { name: "Confluence fast",  cfg: { strategy: "confluence", signalTf: "15m", trendTf: "1h" } },
-  { name: "Patterns 1h",      cfg: { strategy: "pat",        signalTf: "1h",  trendTf: "4h" } },
-  { name: "UT Bot swing",     cfg: { strategy: "ut",         signalTf: "4h",  trendTf: "1d" } },
-  { name: "Open/Close 1h",    cfg: { strategy: "occ",        signalTf: "1h",  trendTf: "4h" } },
-  { name: "Target Trend 2h",  cfg: { strategy: "tt",         signalTf: "2h",  trendTf: "8h" } },
-  { name: "S&R zones",        cfg: { strategy: "sr",         signalTf: "1h",  trendTf: "4h" } },
-  { name: "Patterns swing",   cfg: { strategy: "pat",        signalTf: "4h",  trendTf: "1d" } },
-  { name: "Confluence slow",  cfg: { strategy: "confluence", signalTf: "4h",  trendTf: "1d" } },
-  { name: "UT Bot fast",      cfg: { strategy: "ut",         signalTf: "30m", trendTf: "2h" } },
-  { name: "Best per coin",    cfg: { strategy: "auto",       signalTf: "1h",  trendTf: "4h" } },
+  { name: "Confluence",     cfg: { strategy: "confluence", signalTf: "1h",  trendTf: "4h" } },
+  { name: "Chart patterns", cfg: { strategy: "pat",        signalTf: "1h",  trendTf: "4h" } },
+  { name: "UT Bot",         cfg: { strategy: "ut",         signalTf: "4h",  trendTf: "1d" } },
+  { name: "Open/Close",     cfg: { strategy: "occ",        signalTf: "1h",  trendTf: "4h" } },
+  { name: "Target Trend",   cfg: { strategy: "tt",         signalTf: "2h",  trendTf: "8h" } },
+  { name: "S&R zones",      cfg: { strategy: "sr",         signalTf: "1h",  trendTf: "4h" } },
+  { name: "Patterns slow",  cfg: { strategy: "pat",        signalTf: "4h",  trendTf: "1d" } },
+  { name: "Confluence fast",cfg: { strategy: "confluence", signalTf: "15m", trendTf: "1h" } },
+  { name: "UT Bot fast",    cfg: { strategy: "ut",         signalTf: "30m", trendTf: "2h" } },
+  { name: "Best per coin",  cfg: { strategy: "auto",       signalTf: "1h",  trendTf: "4h" } },
 ];
 
 /** The first lens no bot is using yet. */
@@ -2686,6 +2944,1974 @@ function setupSlice(list) {
   for (let k = 0; k < n; k++) out.push(list[(BOT_TURN + k) % list.length]);
   BOT_TURN = (BOT_TURN + n) % list.length;
   return out;
+}
+
+/* =========================================================================
+   THE MATRIX  —  10 strategies x 10 chart periods = 100 bots.
+
+   Every cell is one bot: one strategy on one period. Each cell is replayed
+   over history per coin, scored on eight measures, put through a wall of
+   filters, and only what survives is ranked. The top few cells per coin
+   become the signal candidates.
+
+   Three things make this different from just running 100 scanners:
+
+   * The score is a weighted combination, not a single number. A cell with a
+     90% win rate over 4 trades is not better than 58% over 120, and a score
+     built only on net profit would say it was. Trade count and consistency
+     are in the formula precisely so a fluke cannot win.
+
+   * Every cell is scored on candles it was not chosen on. The last third of
+     history is held back. Anything can be made to look good on data it was
+     fitted to; the held-back slice is the only part worth reading.
+
+   * Filters come before ranking, not after. A cell that fails the trade
+     minimum is removed rather than ranked low, so it can never surface just
+     because everything else that day was worse.
+
+   Cost is the honest constraint. 100 cells x 100 coins is ten thousand
+   replays; a phone will not do that in one go and pretending otherwise is
+   how the page froze before. So it works through a rotation of coins, keeps
+   what it learns, and improves the picture over minutes rather than claiming
+   to have the whole answer in one pass.
+   ========================================================================= */
+
+const MATRIX_STRATS = ["confluence", "occ", "ut", "tt", "sr",
+                       "pat", "brk", "rsi", "mr", "mom"];
+const MATRIX_TFS = [["5m","30m"], ["15m","1h"], ["30m","2h"], ["1h","4h"],
+                    ["2h","8h"], ["4h","1d"], ["6h","1d"], ["8h","1d"],
+                    ["12h","3d"], ["1d","1w"]];
+
+const MATRIX = {
+  on: false, running: false, cancel: false,
+  cell: new Map(),        // "sym|strat|tf" -> score row
+  coin: 0,                // rotation pointer into the coin list
+  done: 0, total: 0, step: "", at: 0, pass: 0, view: "",
+  err: null,
+};
+
+/* The eight measures, weighted. Everything is on a 0..1 scale before it is
+   weighted, so no single measure can dominate by having a bigger unit. */
+const MSCORE = {
+  winRate:    0.18,
+  profitF:    0.20,
+  netProfit:  0.14,
+  expectancy: 0.18,
+  drawdown:   0.12,
+  trades:     0.08,
+  consistency:0.06,
+  recency:    0.04,
+};
+
+/* The wall. A cell has to clear every one of these before it is ranked. */
+const MFILTER = {
+  minTrades: 20, minWinRate: 45, minPf: 1.1, maxDD: 25, minStability: 60,
+};
+
+function mkey(sym, strat, tf) { return sym + "|" + strat + "|" + tf; }
+
+/* Score one cell from a list of resolved signals. `hold` is the index the
+   held-back slice starts at — everything before it is ignored. */
+function matrixScore(sigs, hold, nowT) {
+  const done = sigs.filter((s) => s.closedAt && s.idx >= hold);
+  const n = done.length;
+  if (!n) return null;
+  let wins = 0, gp = 0, gl = 0, sumR = 0, rN = 0;
+  // A real equity curve, compounding. Summing percentages and calling the
+  // difference a drawdown was wrong: 70 winners then 50 losers came out as
+  // "100% drawdown" on an account that never went below its start. Drawdown
+  // has to be measured against the peak of the curve, as a share of it.
+  let eq = 100, peak = 100, dd = 0;
+  const half = [0, 0];
+  for (let k = 0; k < done.length; k++) {
+    const s = done[k];
+    const risk = Math.abs(s.entry - (s.initialStop != null ? s.initialStop : s.stop));
+    const move = (s.roi || 0) / (s.leverage || 1);
+    if (s.roi > 0) { wins++; gp += s.roi; } else { gl += Math.abs(s.roi); }
+    if (risk > 0) {
+      const r = move / (risk / s.entry * 100);
+      sumR += r; rN++;
+      half[k < done.length / 2 ? 0 : 1] += r;
+    }
+    eq *= 1 + move / 100;
+    peak = Math.max(peak, eq);
+    if (peak > 0) dd = Math.max(dd, (peak - eq) / peak * 100);
+  }
+  const netPct = eq - 100;
+  const winRate = wins / n * 100;
+  const pf = gl > 0 ? gp / gl : (gp > 0 ? 5 : 0);
+  const expR = rN ? sumR / rN : 0;
+  // Consistency: did both halves of the record pay, or only one lucky patch?
+  const stability = (half[0] > 0 && half[1] > 0) ? 100
+                  : (half[0] > 0 || half[1] > 0) ? 50 : 0;
+  const newest = Math.max(...done.map((s) => s.closedAt || 0));
+  const ageDays = nowT ? (nowT - newest) / 86400000 : 0;
+  const norm = {
+    winRate:    Math.min(1, winRate / 70),
+    profitF:    Math.min(1, pf / 2.5),
+    netProfit:  Math.min(1, Math.max(0, netPct) / 60),
+    expectancy: Math.min(1, Math.max(0, expR) / 1.2),
+    drawdown:   Math.max(0, 1 - dd / 40),
+    trades:     Math.min(1, n / 60),
+    consistency:stability / 100,
+    recency:    Math.max(0, 1 - ageDays / 30),
+  };
+  let score = 0;
+  for (const k in MSCORE) score += MSCORE[k] * norm[k];
+  // Shrink toward zero on a thin record.
+  //
+  // Without this, four winning trades in a row scored higher than a hundred
+  // and twenty trades at 58% — which is exactly backwards, and exactly the
+  // way a matrix of a hundred cells fools you. With a hundred cells looking
+  // at the same coin, several will have a perfect short record by chance
+  // alone; that is arithmetic, not skill. Multiplying by n/(n+25) says what
+  // is actually true: a four-trade result is mostly ignorance, and the score
+  // should reflect how much we know, not just how good it looks.
+  const confidence = n / (n + 25);
+  return {
+    n, winRate: +winRate.toFixed(1), pf: +pf.toFixed(2),
+    netPct: +netPct.toFixed(1), expR: +expR.toFixed(2), maxDD: +dd.toFixed(1),
+    stability, ageDays: +ageDays.toFixed(1), confidence: +confidence.toFixed(2),
+    raw: +(score * 100).toFixed(1),
+    score: +(score * confidence * 100).toFixed(1),
+  };
+}
+
+/** Does this cell clear the wall? Returns the reason it failed, or "". */
+function matrixReject(m) {
+  if (!m) return "no trades";
+  if (m.n < MFILTER.minTrades) return m.n + " trades — too few";
+  if (m.winRate < MFILTER.minWinRate) return "won " + m.winRate + "%";
+  if (m.pf < MFILTER.minPf) return "profit factor " + m.pf;
+  if (m.maxDD > MFILTER.maxDD) return "drew down " + m.maxDD + "%";
+  if (m.stability < MFILTER.minStability) return "only one good patch";
+  return "";
+}
+
+/* One coin, all 100 cells. Synchronous per cell, with a yield between
+   strategies so the page keeps breathing. */
+async function matrixCoin(sym) {
+  const keep = snapshotSetup();
+  let built = 0;
+  try {
+    for (const [sigTf, trTf] of MATRIX_TFS) {
+      if (MATRIX.cancel) break;
+      let ltf, htf;
+      try {
+        [ltf, htf] = await Promise.all([
+          btKlines(sym, sigTf, CFG.matrixBars),
+          btKlines(sym, trTf, Math.min(1000, CFG.matrixBars)),
+        ]);
+      } catch (e) { continue; }
+      const d = enrich(ltf), h = enrich(htf);
+      // Half held back, not a third. The wall asks for 20 trades in the
+      // tested slice, and a third of the window rarely contains that many —
+      // so almost every cell was being rejected for thinness rather than for
+      // being bad, which tells you nothing.
+      const hold = Math.floor(d.c.length * 0.5);
+      CFG.signalTf = sigTf; CFG.trendTf = trTf;
+      for (const strat of MATRIX_STRATS) {
+        if (MATRIX.cancel) break;
+        CFG.strategy = strat;
+        let sigs = [];
+        try { sigs = autoSignals(sym, d, h, ltf); } catch (e) { sigs = []; }
+        const m = matrixScore(sigs, hold, Date.now());
+        const tf = sigTf + ">" + trTf;
+        MATRIX.cell.set(mkey(sym, strat, tf), m
+          ? Object.assign(m, { sym, strat, tf, why: matrixReject(m), at: Date.now() })
+          : { sym, strat, tf, n: 0, score: 0, why: "no trades", at: Date.now() });
+        built++;
+        MATRIX.done++;
+      }
+      MATRIX.step = sym.replace("USDT", "") + " · " + sigTf + " · "
+                  + MATRIX.done + " cells";
+      render();
+      await new Promise((r) => setTimeout(r, 0));
+    }
+  } finally {
+    for (const k in keep) CFG[k] = keep[k];
+  }
+  return built;
+}
+
+/* Work through the coin rotation. Never all of them at once — that is the
+   difference between a machine that keeps running and a page that dies. */
+async function matrixRun(coins) {
+  if (MATRIX.running) return;
+  MATRIX.running = true; MATRIX.cancel = false; MATRIX.err = null;
+  MATRIX.done = 0;
+  const list = (coins && coins.length) ? coins
+    : (UNIVERSE.length ? UNIVERSE : CFG.focus);
+  const batch = [];
+  for (let k = 0; k < Math.min(CFG.matrixCoins, list.length); k++) {
+    batch.push(list[(MATRIX.coin + k) % list.length]);
+  }
+  MATRIX.coin = (MATRIX.coin + batch.length) % Math.max(1, list.length);
+  MATRIX.total = batch.length * MATRIX_STRATS.length * MATRIX_TFS.length;
+  try {
+    for (const sym of batch) {
+      if (MATRIX.cancel) break;
+      await matrixCoin(sym);
+    }
+    MATRIX.pass++;
+    MATRIX.at = Date.now();
+  } catch (e) {
+    MATRIX.err = e.message || String(e);
+  } finally {
+    MATRIX.running = false; MATRIX.step = "";
+    saveMatrix(); render(true);
+  }
+}
+
+/** The cells that cleared the wall, best first. */
+function matrixRanked(sym) {
+  const rows = [...MATRIX.cell.values()]
+    .filter((m) => (!sym || m.sym === sym) && !m.why);
+  // Tie-break the way the flow chart says: profit factor, then drawdown,
+  // then how recently it last worked.
+  rows.sort((a, b) => b.score - a.score || b.pf - a.pf
+                   || a.maxDD - b.maxDD || a.ageDays - b.ageDays);
+  return rows;
+}
+
+/** The top few cells per coin — the diverse shortlist, not five of one thing. */
+function matrixTop(sym, n) {
+  const rows = matrixRanked(sym);
+  const out = [], usedStrat = new Map();
+  for (const r of rows) {
+    // Cap any one strategy at two slots, so a shortlist of five is five
+    // opinions rather than the same rule at five speeds.
+    const c = usedStrat.get(r.strat) || 0;
+    if (c >= 2) continue;
+    usedStrat.set(r.strat, c + 1);
+    out.push(r);
+    if (out.length >= (n || CFG.matrixTop)) break;
+  }
+  return out;
+}
+
+/** The whole matrix's best cells, across every coin it has scored. */
+function matrixBest(n) {
+  const bySym = new Map();
+  for (const m of matrixRanked(null)) {
+    if (!bySym.has(m.sym)) bySym.set(m.sym, m);
+  }
+  return [...bySym.values()].sort((a, b) => b.score - a.score).slice(0, n || 12);
+}
+
+const MXKEY = "signals.matrix.v1";
+function saveMatrix() {
+  try {
+    // Keep the best cells whether or not they passed. Saving only the winners
+    // meant that on a coin where nothing cleared the wall you reopened the app
+    // to an empty grid, as though the work had never run — and "it found
+    // nothing" is a result the screen should be able to show you.
+    const keep = [...MATRIX.cell.values()]
+      .sort((a, b) => (b.score || 0) - (a.score || 0)).slice(0, 900);
+    localStorage.setItem(MXKEY, JSON.stringify(
+      { cells: keep, coin: MATRIX.coin, pass: MATRIX.pass, at: MATRIX.at,
+        on: MATRIX.on }));
+  } catch (e) { /* private mode */ }
+}
+function loadMatrix() {
+  try {
+    const o = JSON.parse(localStorage.getItem(MXKEY) || "null");
+    if (!o) return;
+    MATRIX.coin = o.coin || 0; MATRIX.pass = o.pass || 0; MATRIX.at = o.at || 0;
+    MATRIX.on = !!o.on;
+    for (const m of (o.cells || [])) MATRIX.cell.set(mkey(m.sym, m.strat, m.tf), m);
+  } catch (e) { /* nothing to restore */ }
+}
+
+/* The grid, on screen. Ten strategies down, ten chart periods across, one
+   cell per bot, coloured by score. A cell that failed a filter is drawn dark
+   with the reason on tap, because "why is this empty" is the first question
+   anyone asks and an unexplained gap is worse than a bad number. */
+function matrixGrid(sym) {
+  const cells = MATRIX_STRATS.map((strat) => {
+    const row = MATRIX_TFS.map(([a, b]) => {
+      const m = MATRIX.cell.get(mkey(sym, strat, a + ">" + b));
+      if (!m) return `<td class="mx none" title="not scored yet">·</td>`;
+      if (m.why) return `<td class="mx bad" title="${esc(m.why)}">${
+        m.n ? m.n : "—"}</td>`;
+      const g = Math.min(1, m.score / 55);
+      return `<td class="mx ok" style="background:rgba(62,207,142,${
+        (0.12 + g * 0.6).toFixed(2)})"
+        title="${esc(BT_STRATS[strat])} ${esc(a)}/${esc(b)} — score ${m.score}, ${
+        m.n} trades, ${m.winRate}% won, PF ${m.pf}, ${m.maxDD}% drop"
+        >${Math.round(m.score)}</td>`;
+    }).join("");
+    return `<tr><th>${esc(STRAT_SHORT[strat] || strat)}</th>${row}</tr>`;
+  }).join("");
+  return `<div class="mxwrap"><table class="mxt">
+    <tr><th></th>${MATRIX_TFS.map(([a]) => `<th>${a}</th>`).join("")}</tr>
+    ${cells}</table></div>`;
+}
+
+/* The answer to "which modules actually help". One table, measured, ranked.
+   A module that has never disagreed with anything is marked as such rather
+   than credited — a filter that says yes to everything has proved nothing. */
+/* The radar: what is forming but has not fired. Labelled as such, because a
+   near-miss presented next to real signals is how a watchlist turns into a
+   trade you should not have taken. */
+function radarBlock() {
+  const rows = radarRows();
+  if (!rows.length) return "";
+  return `<h2>Radar — forming, not fired</h2>
+    <div class="status">${rows.map((r) => `<div class="kv">
+      <span class="k">${esc(r.symbol.replace("USDT", ""))}
+        <span style="color:#5e5e66">· ${esc(r.side || "")}</span></span>
+      <span class="v">${r.gap != null ? r.gap.toFixed(2) + "% away"
+        : r.pts != null ? r.pts + "/8"
+        : r.why ? esc(r.why) : "close"}</span></div>`).join("")}</div>
+    <div class="hint">These have not fired. They are here so a setup does not
+      appear out of nowhere — not as something to take.</div>`;
+}
+
+/* The risk gate, visible. A limit you cannot see is a limit you will argue
+   with at the worst moment. */
+function riskBar() {
+  if (!RISK) return "";
+  const blocked = OPEN.filter((s) => s.blocked);
+  const any = CFG.dayLossR || CFG.ddStopR || CFG.maxSameSide;
+  if (!any && !blocked.length) return "";
+  return `<div class="card" style="margin-bottom:10px;border-color:${
+      blocked.length ? "#40252a" : "#26262e"}">
+    <div class="kv" style="border:0;padding-top:0">
+      <span class="k" style="font-weight:800">Risk gate</span>
+      <span class="v">${blocked.length ? blocked.length + " blocked" : "clear"}</span>
+    </div>
+    ${kv("Today", (RISK.dayR > 0 ? "+" : "") + RISK.dayR + "R over "
+        + RISK.dayTrades + " trade" + (RISK.dayTrades === 1 ? "" : "s"))}
+    ${kv("Off the peak", RISK.ddR + "R")}
+    ${kv("Open", RISK.openLongs + " long · " + RISK.openShorts + " short")}
+    ${blocked.length ? `<div class="hint" style="margin-bottom:0">${
+      esc(blocked[0].belowBar)}</div>` : ""}
+  </div>`;
+}
+
+/* The factory floor. */
+function evoBlock() {
+  const champs = EVO.champs.map((c) => `<div class="kv">
+      <span class="k">${esc(BT_STRATS[c.strat] || c.strat)}
+        <span style="color:#5e5e66">· ${esc(c.tf.replace(">", " / "))}${
+        c.wins ? " · evolved " + c.wins + "×" : ""}</span></span>
+      <span class="v">${Math.round(c.score)}${c.n ? " · " + c.n + " trades" : ""}
+      </span></div>`).join("");
+  const log = EVO.log.map((l) => `<div class="kv">
+      <span class="k">${esc(l.text)}</span>
+      <span class="v">${age(l.at)}</span></div>`).join("");
+  const gone = EVO.retired.slice(0, 5).map((r) => `<div class="kv">
+      <span class="k">${esc(BT_STRATS[r.strat] || r.strat)}</span>
+      <span class="v" style="color:var(--dim)">${esc(r.why)}</span></div>`).join("");
+
+  return `<div class="card" style="margin-bottom:12px">
+      <div class="kv" style="border:0;padding-top:0">
+        <span class="k" style="font-weight:800;font-size:15px">Bot evolution</span>
+        <span class="v">generation ${EVO.gen}</span>
+      </div>
+      ${kv("Champions", EVO.champs.length + " of " + CFG.evoChamps)}
+      ${kv("Variants per champion", CFG.evoMutations)}
+      ${kv("Margin to take a place", "×" + CFG.evoMargin)}
+      ${EVO.running ? kv("Working on", esc(EVO.step || "…")) : ""}
+      <button class="btn ${EVO.running ? "" : "gold"}" style="margin-top:10px"
+        onclick="${EVO.running ? "EVO.cancel=true" : "evoRun()"}">${
+        EVO.running ? "Stop" : "Run a generation"}</button>
+      <div class="hint" style="margin-bottom:0">Every champion spawns variants
+        with one or two settings nudged one notch — a parameter that works at
+        20 and also at 21 is a real setting; one that works only at 20 is a
+        fluke. A variant has to beat its parent by ×${CFG.evoMargin} to take
+        its place, on the same coin and the same held-back candles. Without
+        that margin champions churn on noise and nothing ever builds a record
+        long enough to judge.</div>
+    </div>
+    ${EVO.champs.length ? "<h2>Champions</h2><div class=\"status\">" + champs
+      + "</div>" : ""}
+    ${log ? "<h2>What changed</h2><div class=\"status\">" + log + "</div>" : ""}
+    ${gone ? "<h2>Retired</h2><div class=\"status\">" + gone + "</div>"
+      : ""}`;
+}
+
+/* The whale panel. Every reading shows the bots behind it and what each one
+   found, because "score 78" with no working shown is a number you have to
+   take on faith — and this is precisely the area where taking things on faith
+   loses money. */
+function whaleBlock() {
+  const rows = [...WHALE.by.values()].sort((a, b) => (b.score || 0) - (a.score || 0));
+  const panel = (r, key, title) => {
+    const part = r[key];
+    if (!part) return `<div class="kv"><span class="k">${title}</span>
+      <span class="v" style="color:#5e5e66">no data</span></div>`;
+    const yes = part.bots.filter((b) => b.says).length;
+    return `<div class="kv"><span class="k">${title}
+        <span style="color:#5e5e66">· ${yes}/${part.bots.length} bots</span></span>
+      <span class="v" style="color:${part.side === "LONG" ? "var(--green2)"
+        : part.side === "SHORT" ? "var(--red2)" : "var(--dim)"}">${
+        part.side || "neutral"}</span></div>
+      <div class="hint" style="margin:0 0 6px">${part.bots.map((b) =>
+        (b.says ? "\u2713 " : "\u00b7 ") + esc(b.note)).join(" &middot; ")}</div>`;
+  };
+  const cards = rows.map((r) => `<div class="card" style="margin-bottom:8px">
+    <div class="kv" style="border:0;padding-top:0">
+      <span class="k" style="font-weight:800">${esc(r.sym.replace("USDT", ""))}
+        <span style="color:#5e5e66;font-weight:400"> · ${age(r.at)}</span></span>
+      <span class="v" style="color:${r.side === "LONG" ? "var(--green2)"
+        : r.side === "SHORT" ? "var(--red2)" : "var(--dim)"}">${
+        r.score == null ? "—" : r.score + "/100"}${r.side ? " " + r.side : ""}</span>
+    </div>
+    ${kv("Reading", esc(r.state || "—"))}
+    ${kv("Bots agreeing", r.botYes + " of " + r.botN)}
+    ${panel(r, "trades", "Large trades")}
+    ${panel(r, "book", "Order book")}
+    ${panel(r, "oi", "Open interest")}
+    ${panel(r, "funding", "Funding")}
+    ${panel(r, "crowd", "Positioning")}
+  </div>`).join("");
+
+  return `<div class="card" style="margin-bottom:12px">
+      <div class="kv" style="border:0;padding-top:0">
+        <span class="k" style="font-weight:800;font-size:15px">Whale engine</span>
+        <span class="v">${WHALE.by.size} coins read</span>
+      </div>
+      ${kv("Bots per coin", "16 across five readings")}
+      ${WHALE.running ? kv("Reading", esc(WHALE.step)) : ""}
+      ${WHALE.at ? kv("Last pass", age(WHALE.at)) : ""}
+      <button class="btn ${WHALE.running ? "" : "gold"}" style="margin-top:10px"
+        onclick="${WHALE.running ? "WHALE.cancel=true"
+          : "whaleRun()"}">${WHALE.running ? "Stop"
+          : "Read the next " + CFG.whaleCoins + " coins"}</button>
+      <div class="hint" style="margin-bottom:0">Five requests per coin: large
+        trades, book depth, open interest, funding and positioning. That is the
+        cost, which is why it reads a few coins at a time and why the readings
+        expire after ${CFG.whaleTtlMin} minutes rather than being trusted
+        forever. It detects the footprint of size — never who traded, which is
+        not knowable from public data.</div>
+      ${WHALE.err ? `<div class="hint" style="color:#ffb08a;margin-bottom:0">${
+        esc(WHALE.err)}</div>` : ""}
+    </div>
+    ${cards || `<div class="segnote">Nothing read yet.</div>`}`;
+}
+
+/* Where the modules currently disagree, across everything on screen. */
+function coherenceBlock() {
+  const rows = OPEN.filter((s) => s.clash && s.clash.length);
+  return `<div class="card" style="margin-bottom:10px">
+    <div class="kv" style="border:0;padding-top:0">
+      <span class="k" style="font-weight:800">Coherence</span>
+      <span class="v">${rows.length
+        ? rows.length + " contradicting" : "no contradictions"}</span>
+    </div>
+    <div class="hint" style="margin-bottom:0">A signal at 55 because
+      everything mildly agrees and a signal at 55 because half the system says
+      buy and half says sell are completely different situations, and one
+      number cannot tell them apart. So contradictions are named and cost
+      confidence instead of quietly cancelling out.</div>
+    ${rows.slice(0, 6).map((s) => `<div class="kv">
+      <span class="k">${esc(s.symbol.replace("USDT", ""))} ${s.side}</span>
+      <span class="v" style="color:#ffb08a">${esc(s.clash[0].why)}</span>
+      </div>`).join("")}
+  </div>`;
+}
+
+/* The scoreboard that keeps the exit brain honest. */
+function exitBlock() {
+  const e = EXITSTAT;
+  const avgB = e.n ? e.brain / e.n : 0, avgF = e.n ? e.fixed / e.n : 0;
+  const diff = avgB - avgF;
+  const verdict = e.n < 20 ? "too few trades to judge"
+    : diff > 0.08 ? "the managed exit is ahead"
+    : diff < -0.08 ? "the plain ladder is ahead — turn the brain off"
+    : "no real difference";
+  return `<div class="card" style="margin-bottom:10px">
+      <div class="kv" style="border:0;padding-top:0">
+        <span class="k" style="font-weight:800;font-size:15px">Exit brain</span>
+        <button class="sw${CFG.exitBrain ? " on" : ""}"
+          onclick="CFG.exitBrain=!CFG.exitBrain;writeHash();render(true)"></button>
+      </div>
+      ${kv("Trades compared", e.n)}
+      ${kv("Managed exit", (avgB > 0 ? "+" : "") + avgB.toFixed(2) + "R average")}
+      ${kv("Plain ladder", (avgF > 0 ? "+" : "") + avgF.toFixed(2) + "R average")}
+      ${kv("Verdict", `<span style="color:${diff > 0.08 ? "var(--green2)"
+        : diff < -0.08 ? "var(--red2)" : "var(--dim)"}">${verdict}</span>`)}
+      ${e.n ? kv("Better / worse", e.better + " / " + e.worse) : ""}
+      <div class="hint" style="margin-bottom:0">Every finished trade is replayed
+        twice: once under the managed exit — partial at the first target, stop to
+        breakeven, hold while momentum expands, cut on a flip, trail once well
+        ahead — and once under the plain target ladder. An exit rule that feels
+        clever and quietly caps every winner at TP1 is easy to write and almost
+        impossible to notice, so both numbers stay on screen.</div>
+    </div>`;
+}
+
+function modulesBlock() {
+  const rows = modLift();
+  const built = rows.map((r) => {
+    const off = (CFG.modOff || []).includes(r.m.id);
+    const col = r.verdict === "helping" ? "var(--green2)"
+              : r.verdict.startsWith("hurting") ? "var(--red2)" : "var(--dim)";
+    return `<div class="card" style="margin-bottom:7px;${off ? "opacity:.5" : ""}">
+      <div class="kv" style="border:0;padding-top:0">
+        <span class="k" style="font-weight:700">${esc(r.m.label)}
+          <span style="color:#5e5e66;font-weight:400"> · ${esc(r.m.group)}${
+            r.m.bots ? " · " + r.m.bots + " bots" : ""}</span></span>
+        <button class="sw${off ? "" : " on"}"
+          onclick="modToggle('${r.m.id}')"></button>
+      </div>
+      <div class="kv"><span class="k">Verdict</span>
+        <span class="v" style="color:${col}">${esc(r.verdict)}</span></div>
+      ${r.n ? `<div class="kv"><span class="k">Average R when it liked / did not</span>
+        <span class="v">${r.hi ? r.hiR : "—"} vs ${r.lo ? r.loR : "—"}</span></div>
+      <div class="kv"><span class="k">Measured lift</span>
+        <span class="v" style="color:${col}">${r.shrunk > 0 ? "+" : ""}${
+          r.shrunk}R</span></div>
+      <div class="kv"><span class="k">Trades seen</span>
+        <span class="v">${r.hi} liked · ${r.lo} not</span></div>` : ""}
+      <div class="hint" style="margin-bottom:0">${esc(r.m.why)}</div>
+    </div>`;
+  }).join("");
+
+  const unbuilt = MODULES.filter((m) => m.needs).map((m) => `<div class="kv">
+      <span class="k">${esc(m.label)}</span>
+      <span class="v" style="color:#5e5e66">not built</span></div>
+    <div class="hint">${esc(m.needs)}</div>`).join("");
+
+  return `<div class="card" style="margin-bottom:12px">
+      <div class="kv" style="border:0;padding-top:0">
+        <span class="k" style="font-weight:800;font-size:15px">Module lift</span>
+        <span class="v">${MODSTAT.n} resolved trades</span>
+      </div>
+      <div class="hint" style="margin-bottom:0">Each module scores every signal
+        0–1 at the moment it fires. When the trade resolves, the average R of
+        the trades it liked is compared with the ones it did not. The gap is
+        its lift, shrunk by sample size. The confidence score on each card is
+        weighted by these numbers — not by my opinion of which modules sound
+        important. Until there is enough evidence they all count equally, which
+        is the honest starting point.</div>
+    </div>
+    <h2>Confidence gate</h2>
+    <div class="status">
+      <div class="kv"><span class="k">Hide signals under</span><span class="v">
+        <input type="range" min="0" max="90" step="5" value="${CFG.modGate}"
+          oninput="setv('modGate',this.value,'')">
+        <span id="v_modGate">${CFG.modGate || "off"}</span></span></div>
+    </div>
+    <div class="hint">${CFG.modGate
+      ? "Signals scoring under " + CFG.modGate + " are held back."
+      : "Off — every signal is shown with its score, and you judge it."}
+      ${MODSTAT.n < 40 ? " With only " + MODSTAT.n + " resolved trades the "
+        + "weights behind the score are still mostly guesswork; leaving the "
+        + "gate off until a few hundred have gone through is the safer read."
+        : ""}</div>
+    <h2>Measured</h2>
+    ${built}
+    <h2>Declared, not built</h2>
+    <div class="status">${unbuilt}</div>`;
+}
+
+function modToggle(id) {
+  const off = new Set(CFG.modOff || []);
+  if (off.has(id)) off.delete(id); else off.add(id);
+  CFG.modOff = [...off];
+  writeHash(); render(true); refresh();
+}
+
+function matrixView() {
+  const scored = new Set([...MATRIX.cell.values()].map((m) => m.sym));
+  const passing = matrixRanked(null).length;
+  const list = [...scored];
+  const sym = list.includes(MATRIX.view) ? MATRIX.view : list[0];
+  const best = matrixBest(10);
+
+  const head = `<div class="card" style="margin-bottom:12px">
+    <div class="kv" style="border:0;padding-top:0">
+      <span class="k" style="font-weight:800;font-size:15px">100 bots</span>
+      <span class="v">${MATRIX_STRATS.length} strategies ×
+        ${MATRIX_TFS.length} periods</span>
+    </div>
+    ${kv("Coins scored", scored.size + " of " + (UNIVERSE.length || CFG.pairs))}
+    ${kv("Cells that cleared the wall", passing + " of " + MATRIX.cell.size)}
+    ${kv("Full passes", MATRIX.pass + (MATRIX.at ? " · last " + age(MATRIX.at) : ""))}
+    ${MATRIX.running ? kv("Working on", esc(MATRIX.step || "…")) : ""}
+    <button class="btn ${MATRIX.running ? "" : "gold"}" style="margin-top:10px"
+      onclick="${MATRIX.running ? "MATRIX.cancel=true" : "matrixRun()"}">${
+      MATRIX.running ? "Stop" : "Score the next " + CFG.matrixCoins
+        + " coins"}</button>
+    <div class="hint" style="margin-bottom:0">Each cell is one strategy on one
+      chart period, replayed over ${CFG.matrixBars} candles and scored on the
+      last third only — the part it was not chosen on. It works through the
+      coin list a few at a time; ten thousand replays in one go would lock the
+      phone.</div>
+  </div>`;
+
+  const wall = `<h2>The wall</h2><div class="status">
+    ${kv("Minimum trades", MFILTER.minTrades + " in the tested half")}
+    ${kv("Minimum win rate", MFILTER.minWinRate + "%")}
+    ${kv("Minimum profit factor", MFILTER.minPf)}
+    ${kv("Maximum drawdown", MFILTER.maxDD + "%")}
+    ${kv("Both halves must pay", "yes")}</div>
+    <div class="hint">A cell that fails any of these is removed before ranking,
+      not ranked low. Otherwise a bad cell surfaces on a day when everything
+      else was worse.</div>`;
+
+  const table = best.length ? `<h2>Best cell per coin</h2>
+    <div class="mxwrap"><table class="mxt lb">
+      <tr><th>Coin</th><th>Strategy</th><th>Period</th><th>Score</th>
+          <th>Trades</th><th>Won</th><th>PF</th></tr>
+      ${best.map((m) => `<tr>
+        <th>${esc(m.sym.replace("USDT", ""))}</th>
+        <td>${esc(STRAT_SHORT[m.strat] || m.strat)}</td>
+        <td>${esc(m.tf.replace(">", " / "))}</td>
+        <td><b>${Math.round(m.score)}</b></td>
+        <td>${m.n}</td><td>${m.winRate}%</td><td>${m.pf}</td></tr>`).join("")}
+    </table></div>` : "";
+
+  const picker = list.length > 1 ? `<div class="chips" style="margin-bottom:8px">
+    ${list.slice(0, 24).map((x) => `<button class="chip${x === sym ? " on" : ""}"
+      onclick="MATRIX.view='${esc(x)}';render(true)"
+      >${esc(x.replace("USDT", ""))}</button>`).join("")}</div>` : "";
+
+  const grid = sym ? `<h2>${esc(sym.replace("USDT", ""))} — every cell</h2>
+    ${picker}${matrixGrid(sym)}
+    <div class="hint">Green is a cell that passed and scored well. A number in
+      grey is a cell that produced that many trades but failed a filter — tap
+      it to see which. A dot has not been scored yet.</div>` : "";
+
+  const shortlist = sym ? (() => {
+    const top = matrixTop(sym, CFG.matrixTop);
+    if (!top.length) return `<h2>Shortlist</h2><div class="segnote">Nothing on
+      ${esc(sym.replace("USDT", ""))} cleared the wall. That is a result, not a
+      gap — it means no strategy at any period has a record on this coin worth
+      trading right now.</div>`;
+    return `<h2>Shortlist for ${esc(sym.replace("USDT", ""))}</h2>
+      <div class="status">${top.map((m) => kv(
+        (STRAT_SHORT[m.strat] || m.strat) + " · " + m.tf.replace(">", " / "),
+        "<b>" + Math.round(m.score) + "</b> · " + m.n + " trades · "
+          + m.winRate + "% · PF " + m.pf)).join("")}</div>
+      <div class="hint">No strategy may take more than two of these slots, so a
+        shortlist of ${CFG.matrixTop} is ${CFG.matrixTop} opinions rather than
+        one rule at five speeds.</div>`;
+  })() : "";
+
+  return head + (MATRIX.err ? `<div class="segnote" style="color:#ffb08a">${
+    esc(MATRIX.err)}</div>` : "") + table + grid + shortlist + wall
+    + "<h2>Exit brain vs the plain ladder</h2>" + exitBlock()
+    + "<h2>Whale / mega-trader engine</h2>" + whaleBlock()
+    + "<h2>Do the modules agree?</h2>" + coherenceBlock()
+    + "<h2>Bot factory</h2>" + evoBlock()
+    + "<h2>Which modules actually help</h2>" + modulesBlock();
+}
+
+/* =========================================================================
+   MODULES  —  and, more importantly, measuring which of them are worth having.
+
+   The temptation with a list of sixty-five modules is to build all of them and
+   assume the pile is better than the parts. It usually is not. Most context
+   filters sound obviously right and do nothing measurable; a few do a lot; and
+   one or two make results worse while feeling clever. The only way to tell
+   them apart is to record what each module said at the moment a signal fired,
+   wait for that signal to resolve, and compare.
+
+   So every module here answers one question with a number between 0 and 1 —
+   how much this module likes the trade — and nothing is weighted by opinion.
+   The weights come from measured lift: the difference in average R between
+   the trades a module liked and the trades it did not. A module with no
+   measurable lift ends up with no influence, whatever its reputation.
+
+   Modules that need data this app cannot get from a static page — order-book
+   depth, trade flow, liquidations — are declared here with `needs` set, so
+   they are visible as unbuilt rather than silently missing. Pretending a
+   module exists is worse than not having it.
+   ========================================================================= */
+
+const MODULES = [
+  // ---- market context -----------------------------------------------------
+  { id: "regime", group: "Context", label: "Market regime",
+    why: "Trend rules pay in trends and bleed in ranges. This scores how well "
+       + "the coin's current state fits the kind of strategy that fired.",
+    fn: (c) => {
+      const trending = Math.min(1, Math.max(0, (c.adx - 12) / 20));
+      const fam = STRAT_FAMILY[c.strat] || "trend";
+      return fam === "revert" ? 1 - trending : trending;
+    } },
+
+  { id: "htf", group: "Context", label: "Higher timeframe agrees",
+    why: "The slower chart's trend pointing the same way as the trade.",
+    fn: (c) => c.htfSide == null ? null : (c.htfSide === c.side ? 1 : 0) },
+
+  { id: "btc", group: "Context", label: "BTC context",
+    why: "An altcoin long while Bitcoin is falling hard is a bet against the "
+       + "tide. Scores the trade's direction against BTC's own trend.",
+    fn: (c) => {
+      if (c.btcTrend == null) return null;
+      if (c.sym === "BTCUSDT") return null;
+      const with_ = (c.side === "LONG") === (c.btcTrend > 0);
+      return with_ ? 1 : Math.max(0, 1 - Math.abs(c.btcTrend) / 3);
+    } },
+
+  { id: "rs", group: "Context", label: "Relative strength vs BTC",
+    why: "Coins outperforming Bitcoin over the last day, for longs; "
+       + "underperforming, for shorts.",
+    fn: (c) => {
+      if (c.change == null || c.btcChange == null) return null;
+      const rel = c.change - c.btcChange;
+      const good = c.side === "LONG" ? rel : -rel;
+      return Math.min(1, Math.max(0, (good + 3) / 8));
+    } },
+
+  // ---- confirmation -------------------------------------------------------
+  { id: "volume", group: "Confirmation", label: "Volume confirmation",
+    why: "A move on thin volume is a move nobody agreed with.",
+    fn: (c) => c.volRatio == null ? null
+             : Math.min(1, Math.max(0, (c.volRatio - 0.6) / 1.4)) },
+
+  { id: "agree", group: "Confirmation", label: "Independent agreement",
+    why: "How many of the four independent direction reads back this side.",
+    fn: (c) => c.agree == null ? null : c.agree / (c.agreeOf || 4) },
+
+  { id: "vola", group: "Confirmation", label: "Volatility quality",
+    why: "Too quiet and the targets are unreachable; too wild and the stop is "
+       + "hit by noise. Scores how close ATR is to the useful middle.",
+    fn: (c) => {
+      if (c.atrPct == null) return null;
+      const x = c.atrPct;
+      return x < 0.4 ? x / 0.4 : x > 6 ? Math.max(0, 1 - (x - 6) / 6) : 1;
+    } },
+
+  { id: "squeeze", group: "Confirmation", label: "Volatility expansion",
+    why: "A range that has been compressing and is now opening up. Breakouts "
+       + "out of compression behave differently from breakouts out of chaos.",
+    fn: (c) => c.bbExpand == null ? null
+             : Math.min(1, Math.max(0, c.bbExpand)) },
+
+  // ---- execution ----------------------------------------------------------
+  { id: "liquid", group: "Execution", label: "Liquidity",
+    why: "A coin nobody trades can show a perfect setup you cannot get filled "
+       + "on at anything like the price on the card.",
+    fn: (c) => c.vol24 == null ? null
+             : Math.min(1, Math.log10(Math.max(1, c.vol24) / 1e6) / 2.5) },
+
+  { id: "risk", group: "Execution", label: "Stop distance sanity",
+    why: "A stop so tight the coin's normal noise takes it out, or so wide "
+       + "the leverage collapses to nothing.",
+    fn: (c) => {
+      if (c.stopAtr == null) return null;
+      const x = c.stopAtr;
+      return x < 0.5 ? x / 0.5 : x > 4 ? Math.max(0, 1 - (x - 4) / 4) : 1;
+    } },
+
+  { id: "cost", group: "Execution", label: "Cost vs target",
+    why: "Fees and slippage as a share of the first target. A signal whose "
+       + "round trip eats a third of TP1 is not really a signal.",
+    fn: (c) => {
+      if (c.tp1Pct == null || !(c.tp1Pct > 0)) return null;
+      const share = tradeCostPct(c.leverage) / c.tp1Pct;
+      return Math.max(0, 1 - share * 2.5);
+    } },
+
+  // ---- evidence -----------------------------------------------------------
+  { id: "record", group: "Evidence", label: "Record on this coin",
+    why: "How often this strategy has reached its first target on this coin.",
+    fn: (c) => c.recRate == null ? null : Math.min(1, c.recRate / 70) },
+
+  { id: "fresh", group: "Evidence", label: "Freshness",
+    why: "How far into its life the setup already is. An entry price from "
+       + "forty candles ago is not an entry price.",
+    fn: (c) => c.ageBars == null ? null
+             : Math.max(0, 1 - c.ageBars / Math.max(1, CFG.maxAgeBars || 24)) },
+
+  { id: "cell", group: "Evidence", label: "Matrix cell score",
+    why: "What the 100-bot matrix scored this exact strategy-and-period "
+       + "combination on this exact coin, on held-back history.",
+    fn: (c) => c.cellScore == null ? null : Math.min(1, c.cellScore / 50) },
+
+  // ---- smart money --------------------------------------------------------
+  { id: "whale", group: "Smart money", label: "Large-trader footprint",
+    bots: 16,
+    why: "Unusually large executions, which side was the aggressor, book "
+       + "depth, and open interest against price — sixteen independent checks "
+       + "across five readings. Scores whether the footprint of size points "
+       + "the same way as the trade.",
+    fn: (c) => {
+      if (!c.whale || c.whale.score == null) return null;
+      if (!c.whale.side) return 0.5;                 // present but undecided
+      return c.whale.side === c.side
+        ? 0.5 + c.whale.score / 200 : 0.5 - c.whale.score / 200;
+    } },
+
+  { id: "crowd", group: "Smart money", label: "Crowding (funding & positioning)",
+    bots: 6,
+    why: "Funding and the long/short ratio. Read as a fade, not a follow: "
+       + "heavy positive funding means longs are paying to stay long, which "
+       + "is a reason for caution on a long, not enthusiasm.",
+    fn: (c) => {
+      if (!c.crowdSide) return null;
+      return c.crowdSide === c.side ? 0.85 : 0.15;
+    } },
+
+  // ---- declared but not built --------------------------------------------
+  { id: "flow", group: "Not built", label: "Trade flow / CVD",
+    needs: "the aggregate-trade stream — a websocket per coin.",
+    why: "Whether aggressive buyers or sellers are in control." },
+  { id: "liq", group: "Not built", label: "Liquidations",
+    needs: "the forceOrder websocket.",
+    why: "Liquidation clusters and squeezes." },
+  { id: "news", group: "Not built", label: "Event risk",
+    needs: "a news feed with an API key — a static page cannot hold one.",
+    why: "Suppress signals around scheduled high-impact events." },
+];
+
+const STRAT_FAMILY = {
+  confluence: "trend", occ: "trend", ut: "trend", tt: "trend",
+  brk: "breakout", mom: "momentum", pat: "breakout",
+  sr: "revert", mr: "revert", rsi: "revert",
+};
+
+const LIVE_MODULES = MODULES.filter((m) => !m.needs);
+
+/* Build the context one signal is judged in. Everything here comes from data
+   already loaded for the scan — no module is allowed to cost an extra request
+   without being declared as such. */
+/** A whale reading, but only if it is recent enough to mean anything. */
+function whaleFresh(sym) {
+  const w = WHALE.by.get(sym);
+  if (!w) return null;
+  return (Date.now() - w.at) <= CFG.whaleTtlMin * 60000 ? w : null;
+}
+
+function moduleCtx(sym, d, i, sig, h) {
+  const vol = d.vol[i], vma = d.volMa[i];
+  const n = 20;
+  let bb = null;
+  if (i > n * 2) {
+    const w = (from) => {
+      let m = 0; for (let k = from - n; k < from; k++) m += d.close[k];
+      m /= n;
+      let v = 0; for (let k = from - n; k < from; k++) v += (d.close[k] - m) ** 2;
+      return Math.sqrt(v / n) / m;
+    };
+    const now = w(i), was = w(i - n);
+    bb = was > 0 ? (now / was - 0.8) / 1.2 : null;
+  }
+  const btc = TICK["BTCUSDT"];
+  const tk = TICK[sym];
+  const cell = MATRIX.cell.get(mkey(sym, sig.strat, sig.stf + ">" + CFG.trendTf));
+  return {
+    sym, side: sig.side, strat: sig.strat, leverage: sig.leverage,
+    adx: d.adx[i], atrPct: d.atrPct[i],
+    volRatio: vma > 0 ? vol / vma : null,
+    bbExpand: bb,
+    htfSide: h ? htfBias(h, d.c[i].t) : null,
+    agree: sig.agree, agreeOf: sig.agreeOf,
+    change: tk ? tk.change : null,
+    btcChange: btc ? btc.change : null,
+    btcTrend: btc ? btc.change : null,
+    vol24: tk ? tk.vol : null,
+    stopAtr: d.atr[i] > 0
+      ? Math.abs(sig.entry - (sig.initialStop != null ? sig.initialStop : sig.stop))
+        / d.atr[i] : null,
+    tp1Pct: sig.targets && sig.targets[0]
+      ? Math.abs(sig.targets[0].price - sig.entry) / sig.entry * 100 * sig.leverage
+      : null,
+    recRate: sig.rec && sig.rec.n >= 4 ? sig.rec.rate : null,
+    ageBars: Math.max(0, (d.c.length - 2) - i),
+    cellScore: cell && !cell.why ? cell.score : null,
+    whale: whaleFresh(sym),
+    crowdSide: (() => {
+      const w = whaleFresh(sym);
+      if (!w) return null;
+      const f = w.funding && w.funding.side, c2 = w.crowd && w.crowd.side;
+      // Only when funding and positioning point the same way. One of them
+      // alone is a weak read, and averaging two disagreeing reads into
+      // "neutral" would hide that they disagreed.
+      return f && c2 && f === c2 ? f : null;
+    })(),
+  };
+}
+
+/** Run every live module over one signal and stick the readings on it. */
+function moduleRead(sym, d, i, sig, h) {
+  let ctx;
+  try { ctx = moduleCtx(sym, d, i, sig, h); } catch (e) { return; }
+  const out = {};
+  for (const m of LIVE_MODULES) {
+    if (CFG.modOff && CFG.modOff.includes(m.id)) continue;
+    let v = null;
+    try { v = m.fn(ctx); } catch (e) { v = null; }
+    if (v != null && isFinite(v)) out[m.id] = +Math.min(1, Math.max(0, v)).toFixed(3);
+  }
+  sig.mods = out;
+  const base = confidenceOf(out);
+  // Contradiction costs confidence. Two modules being confidently opposite is
+  // strictly worse information than both being unsure, and averaging them
+  // into a calm middle number would say the opposite.
+  const coh = coherenceOf({ mods: out });
+  sig.clash = coh.clashes;
+  sig.split = coh.split;
+  sig.confidence = base == null ? null
+    : Math.max(0, Math.round(base * (1 - coh.penalty)));
+  sig.confRaw = base;
+}
+
+/* ------------------------------------------------------------------ lift
+   The measurement. For every resolved signal, each module's reading is put in
+   one of two buckets — it liked the trade, or it did not — and the average R
+   of each bucket is compared. The gap is the module's lift.
+
+   Shrunk by sample size for the same reason the matrix score is: with fifteen
+   modules and a few dozen trades, something will look brilliant by accident. */
+const MODSTAT = { by: {}, n: 0 };
+const MODKEY = "signals.modules.v1";
+
+function modLearn(list) {
+  for (const s of list) {
+    if (!s.closedAt || !s.mods || s._learned) continue;
+    const r = rOf(s);
+    if (r == null) continue;
+    s._learned = true;
+    MODSTAT.n++;
+    for (const id in s.mods) {
+      const b = MODSTAT.by[id] || (MODSTAT.by[id] = { hi: 0, hiR: 0, lo: 0, loR: 0 });
+      if (s.mods[id] >= 0.5) { b.hi++; b.hiR += r; } else { b.lo++; b.loR += r; }
+    }
+  }
+  saveModules();
+}
+
+function modLift() {
+  const rows = [];
+  for (const m of LIVE_MODULES) {
+    const b = MODSTAT.by[m.id];
+    if (!b || (!b.hi && !b.lo)) {
+      rows.push({ m, n: 0, lift: 0, shrunk: 0, hi: 0, lo: 0, verdict: "no data yet" });
+      continue;
+    }
+    const hiR = b.hi ? b.hiR / b.hi : 0, loR = b.lo ? b.loR / b.lo : 0;
+    const n = Math.min(b.hi, b.lo);
+    const lift = (b.hi && b.lo) ? hiR - loR : 0;
+    // With only one bucket filled there is nothing to compare, so the module
+    // is not credited — a filter that has never said no has proved nothing.
+    const shrunk = lift * (n / (n + 12));
+    rows.push({
+      m, n: b.hi + b.lo, hi: b.hi, lo: b.lo, hiR: +hiR.toFixed(2),
+      loR: +loR.toFixed(2), lift: +lift.toFixed(2), shrunk: +shrunk.toFixed(3),
+      verdict: !b.hi || !b.lo ? "never disagreed — nothing to compare"
+             : n < 8 ? "too few to judge"
+             : shrunk > 0.12 ? "helping"
+             : shrunk < -0.12 ? "hurting — worth turning off"
+             : "no measurable difference",
+    });
+  }
+  rows.sort((a, b) => b.shrunk - a.shrunk);
+  return rows;
+}
+
+/* The weights are measured, not chosen. Until there is enough evidence every
+   module counts the same, which is the honest prior: we do not yet know. */
+function modWeights() {
+  const w = {}, rows = modLift();
+  let any = 0;
+  for (const r of rows) if (r.shrunk > 0) any += r.shrunk;
+  for (const r of rows) {
+    w[r.m.id] = any > 0.05 ? Math.max(0, r.shrunk) / any : 1 / rows.length;
+  }
+  return w;
+}
+
+/** One number, 0–100, and it can say what it is made of. */
+function confidenceOf(mods) {
+  const w = modWeights();
+  let sum = 0, tot = 0;
+  for (const id in mods) {
+    const ww = w[id] || 0;
+    sum += ww * mods[id]; tot += ww;
+  }
+  return tot > 0 ? Math.round(sum / tot * 100) : null;
+}
+
+/** Why a signal scored what it scored, biggest contributors first. */
+function confidenceWhy(sig, top) {
+  if (!sig.mods) return [];
+  const w = modWeights();
+  return Object.keys(sig.mods)
+    .map((id) => ({ id, v: sig.mods[id], w: w[id] || 0,
+                    label: (LIVE_MODULES.find((m) => m.id === id) || {}).label || id }))
+    .sort((a, b) => (b.w * b.v) - (a.w * a.v))
+    .slice(0, top || 5);
+}
+
+function saveModules() {
+  try { localStorage.setItem(MODKEY, JSON.stringify(MODSTAT)); } catch (e) {}
+}
+function loadModules() {
+  try {
+    const o = JSON.parse(localStorage.getItem(MODKEY) || "null");
+    if (o && o.by) { MODSTAT.by = o.by; MODSTAT.n = o.n || 0; }
+  } catch (e) {}
+}
+
+/* =========================================================================
+   BOT FACTORY, TOURNAMENT AND EVOLUTION
+
+   The matrix answers "which strategy on which period on which coin". This
+   answers the harder one: where do the candidates come from, and who gets
+   retired.
+
+   A generation works like this. Every champion spawns mutations — the same
+   strategy with one or two settings nudged. Every mutation is scored on
+   held-back history exactly as the matrix scores a cell. Mutations that beat
+   their parent by a clear margin take its place; the rest are discarded. A
+   champion whose live results have decayed is retired whether or not anything
+   beat it, because "still the best of a bad set" is not a reason to keep
+   trading something.
+
+   Two rules keep this from being a random-number generator with good PR:
+
+   * A mutation must beat its parent by a margin, not by a nose. Without that,
+     champions churn constantly on noise and nothing ever accumulates a record
+     long enough to judge.
+
+   * Diversity is enforced at selection. Twenty bots that are technically
+     different but fire on the same bar are one bot wearing twenty hats, and
+     an ensemble built from them will feel confident and be wrong together.
+   ========================================================================= */
+
+const EVO = {
+  gen: 0, running: false, cancel: false, step: "",
+  pool: [],            // candidates this generation
+  champs: [],          // what is live
+  retired: [],
+  log: [],
+  at: 0,
+};
+
+const EVOKEY = "signals.evo.v1";
+
+/** One nudge to one setting, drawn from that strategy's own search space. */
+function mutateCfg(cfg, n) {
+  const space = optSpace(cfg.strategy);
+  const keys = Object.keys(space).filter((k) => k !== "tfPair" && k in cfg);
+  const next = { ...cfg };
+  const picks = Math.max(1, n || 1);
+  for (let i = 0; i < picks; i++) {
+    if (!keys.length) break;
+    // Walk the key list, one step per generation, so successive mutations
+    // explore different settings. This was `(gen * 7 + i * 3 + len) % len`,
+    // which for a seven-key strategy is zero every single time — six
+    // generations all nudged the same setting and the factory was searching
+    // one dimension of a seven-dimensional space.
+    const k = keys[(EVO.gen + i) % keys.length];
+    const opts = space[k];
+    const cur = opts.indexOf(cfg[k]);
+    // A neighbouring value, not a random one. A parameter that works at 20
+    // and also at 21 is a real setting; one that works only at 20 is a fluke,
+    // and stepping one notch at a time is how you tell them apart.
+    const step = (EVO.gen % 2 ? 1 : -1) * (1 + (i % 2));
+    const idx = cur < 0 ? Math.floor(opts.length / 2)
+              : Math.min(opts.length - 1, Math.max(0, cur + step));
+    next[k] = opts[idx];
+  }
+  return next;
+}
+
+/** Score one candidate config on one coin's held-back history. */
+function evoScore(sym, d, h, ltf, cfg) {
+  const keep = snapshotSetup();
+  try {
+    for (const k in cfg) if (k in CFG) CFG[k] = cfg[k];
+    const hold = Math.floor(d.c.length * 0.5);
+    let sigs = [];
+    try { sigs = autoSignals(sym, d, h, ltf); } catch (e) { return null; }
+    return matrixScore(sigs, hold, Date.now());
+  } finally {
+    for (const k in keep) CFG[k] = keep[k];
+  }
+}
+
+/* Two configs are "the same bot" if they fire together. Comparing settings
+   would call 20 and 21 different; comparing the bars they fire on tells the
+   truth. */
+function evoOverlap(a, b) {
+  if (!a || !b || !a.bars || !b.bars) return 0;
+  const A = new Set(a.bars);
+  let hit = 0;
+  for (const x of b.bars) if (A.has(x)) hit++;
+  return hit / Math.max(1, Math.min(A.size, b.bars.length));
+}
+
+/** One generation over one coin: mutate the champions, score, replace. */
+async function evoGeneration(sym) {
+  const [ltfRows, htfRows] = await Promise.all([
+    btKlines(sym, CFG.signalTf, CFG.matrixBars),
+    btKlines(sym, CFG.trendTf, Math.min(1000, CFG.matrixBars)),
+  ]);
+  const d = enrich(ltfRows), h = enrich(htfRows);
+
+  // Seed the champion list on the first run from the best matrix cells.
+  if (!EVO.champs.length) {
+    const seed = matrixRanked(null).slice(0, CFG.evoChamps);
+    EVO.champs = seed.map((c) => ({
+      id: "c" + (++EVO.gen) + "-" + c.strat + "-" + c.tf,
+      strat: c.strat, tf: c.tf, cfg: null, score: c.score, n: c.n,
+      born: Date.now(), wins: 0, sym: c.sym,
+    }));
+    // Nothing in the matrix yet: start from the lineup so evolution has
+    // somewhere to begin rather than sitting idle.
+    if (!EVO.champs.length) {
+      EVO.champs = BOT_LINEUP.slice(0, CFG.evoChamps).map((l, i) => ({
+        id: "c0-" + i + "-" + l.cfg.strategy,
+        strat: l.cfg.strategy, tf: l.cfg.signalTf + ">" + l.cfg.trendTf,
+        cfg: { ...snapshotSetup(), ...l.cfg }, score: 0, n: 0,
+        born: Date.now(), wins: 0, sym,
+      }));
+    }
+  }
+
+  EVO.gen++;
+  let replaced = 0, tested = 0;
+  for (const champ of EVO.champs) {
+    if (EVO.cancel) break;
+    const base = champ.cfg || { ...snapshotSetup(), strategy: champ.strat,
+      signalTf: champ.tf.split(">")[0], trendTf: champ.tf.split(">")[1] };
+    // Re-score the parent on this coin, so parent and child are judged on
+    // exactly the same candles. Comparing a child here against a parent's
+    // score from a different coin would be meaningless.
+    const parent = evoScore(sym, d, h, ltfRows, base);
+    let best = null, bestCfg = null;
+    for (let k = 0; k < CFG.evoMutations; k++) {
+      if (EVO.cancel) break;
+      const cand = mutateCfg(base, 1 + (k % 2));
+      const m = evoScore(sym, d, h, ltfRows, cand);
+      tested++;
+      if (m && !matrixReject(m) && (!best || m.score > best.score)) {
+        best = m; bestCfg = cand;
+      }
+      await new Promise((r) => setTimeout(r, 0));
+    }
+    EVO.step = champ.strat + " · gen " + EVO.gen + " · " + tested + " tested";
+    render();
+
+    const pScore = parent && !matrixReject(parent) ? parent.score : 0;
+    // The margin. A child that is 3% better is noise wearing a rosette.
+    if (best && best.score > pScore * CFG.evoMargin && best.score > 0) {
+      EVO.log.unshift({ at: Date.now(), text: champ.strat + " on "
+        + sym.replace("USDT", "") + " improved "
+        + Math.round(pScore) + " → " + Math.round(best.score) });
+      champ.cfg = bestCfg; champ.score = best.score; champ.n = best.n;
+      champ.wins++; champ.evolved = Date.now();
+      replaced++;
+    } else if (parent) {
+      champ.score = pScore; champ.n = parent.n;
+    }
+  }
+
+  // Retirement. A champion that has stopped clearing the wall, or whose live
+  // record has gone negative over enough trades, is dropped — being the least
+  // bad of a bad set is not a reason to keep trading it.
+  const before = EVO.champs.length;
+  // Retiring on one bad generation wiped the entire roster on the first run —
+  // a coin whose held-back window happens to suit nothing left the factory
+  // with no champions at all and nothing to mutate from. A champion has to
+  // fail repeatedly, and the best of them are kept regardless so evolution
+  // always has parents.
+  const keepBest = new Set(EVO.champs.slice()
+    .sort((a, b) => b.score - a.score)
+    .slice(0, Math.max(2, Math.ceil(CFG.evoChamps / 3))).map((c) => c.id));
+  EVO.champs = EVO.champs.filter((c) => {
+    const live = botStats(c.id);
+    const deadLive = live.n >= CFG.evoRetireAfter && live.exp < 0;
+    c.fails = c.score <= 0 ? (c.fails || 0) + 1 : 0;
+    const deadTest = c.fails >= CFG.evoPatience;
+    if (!deadLive && !deadTest) return true;
+    if (keepBest.has(c.id) && !deadLive) return true;
+    EVO.retired.unshift({ ...c, why: deadLive ? "live record went negative"
+      : "failed " + c.fails + " generations running", at: Date.now() });
+    return false;
+  });
+  EVO.retired = EVO.retired.slice(0, 20);
+  if (EVO.champs.length < before) {
+    EVO.log.unshift({ at: Date.now(),
+      text: (before - EVO.champs.length) + " retired" });
+  }
+  EVO.champs.sort((a, b) => b.score - a.score);
+  EVO.log = EVO.log.slice(0, 12);
+  return { tested, replaced };
+}
+
+async function evoRun(sym) {
+  if (EVO.running || BUSY || BEST.running || MATRIX.running) return;
+  EVO.running = true; EVO.cancel = false;
+  const coin = sym || (UNIVERSE.length ? UNIVERSE[0] : CFG.focus[0]);
+  try {
+    await evoGeneration(coin);
+    EVO.at = Date.now();
+  } catch (e) {
+    EVO.log.unshift({ at: Date.now(), text: "failed: " + (e.message || e) });
+  } finally {
+    EVO.running = false; EVO.step = "";
+    saveEvo(); render(true);
+  }
+}
+
+function saveEvo() {
+  try {
+    localStorage.setItem(EVOKEY, JSON.stringify({
+      gen: EVO.gen, champs: EVO.champs, retired: EVO.retired,
+      log: EVO.log, at: EVO.at }));
+  } catch (e) {}
+}
+function loadEvo() {
+  try {
+    const o = JSON.parse(localStorage.getItem(EVOKEY) || "null");
+    if (!o) return;
+    EVO.gen = o.gen || 0; EVO.champs = o.champs || []; EVO.retired = o.retired || [];
+    EVO.log = o.log || []; EVO.at = o.at || 0;
+  } catch (e) {}
+}
+
+/* =========================================================================
+   SIGNAL LIFECYCLE
+
+   A signal is not a moment, it is a life. Treating it as a single event is
+   why the old list could show something that had already run 4% past its
+   entry as though you could still take it.
+
+     watching   — the conditions are forming, nothing has fired
+     candidate  — it fired, but has not cleared the filters
+     confirmed  — cleared everything; this is a signal
+     entry      — price is still inside the entry zone; actionable now
+     active     — you would be in it; price has moved on but it is alive
+     tp         — at least one target hit
+     closed     — stopped, or all targets hit
+     invalid    — the setup broke before it could be taken
+   ========================================================================= */
+
+const LIFE = ["watching", "candidate", "confirmed", "entry", "active",
+              "tp", "closed", "invalid"];
+const LIFE_LABEL = {
+  watching: "Watching", candidate: "Candidate", confirmed: "Confirmed",
+  entry: "Entry zone", active: "Running", tp: "In profit",
+  closed: "Closed", invalid: "Invalidated",
+};
+
+/** Where in its life is this signal, right now? */
+function lifeOf(s) {
+  if (!s) return "watching";
+  if (s.closedAt) return s.status === "stopped" ? "closed"
+                        : s.hits ? "tp" : "closed";
+  if (s.hits) return "tp";
+  if (s.belowBar) return "candidate";
+  const px = s.price != null ? s.price : s.entry;
+  const risk = Math.abs(s.entry - (s.initialStop != null ? s.initialStop : s.stop));
+  if (!(risk > 0)) return "confirmed";
+  const drift = Math.abs(px - s.entry) / risk;
+  // Past the stop without ever being takeable: the setup broke.
+  const wrongWay = (s.side === "LONG" ? px < s.entry : px > s.entry);
+  if (wrongWay && drift >= 1) return "invalid";
+  // Still within a third of the risk of the entry — you can take this now at
+  // something close to the price on the card.
+  if (drift <= CFG.entryZoneR) return "entry";
+  return "active";
+}
+
+/* The radar: coins where the conditions are forming but nothing has fired.
+   Built from the near-misses the scan already collects, so it costs nothing
+   extra — and it is honest about what it is, which is not a signal. */
+function radarRows() {
+  const rows = [];
+  for (const w of WATCH) {
+    rows.push({ symbol: w.symbol, side: w.side,
+                gap: Number.isFinite(w.gap) ? w.gap : null,
+                pts: w.pts != null ? w.pts : null });
+  }
+  for (const s of SPARE) {
+    if (s.closedAt) continue;
+    if (rows.some((r) => r.symbol === s.symbol)) continue;
+    rows.push({ symbol: s.symbol, side: s.side, why: s.belowBar,
+                conf: s.confidence, gap: null });
+  }
+  return rows.slice(0, 14);
+}
+
+/* =========================================================================
+   ENSEMBLE BRAIN
+
+   "Three bots agree" counts heads. This weighs them: a bot with a positive
+   live record counts for more than one that has been wrong all week, and a
+   bot with no record at all counts for very little rather than for one.
+
+   The weight is shrunk by sample size for the same reason everything else
+   here is — a bot that is 3-for-3 has told you almost nothing.
+   ========================================================================= */
+
+function botWeight(id) {
+  const st = botStats(id);
+  // No record is not the same as a bad record. An unproven bot sits at the
+  // prior; a bot measured as losing has to be allowed to fall below it, or
+  // "one good bot plus one unproven" and "one good bot plus one known loser"
+  // come out identical — which is the opposite of what the ensemble is for.
+  const PRIOR = 0.15;
+  if (!st.n) return PRIOR;
+  const conf = st.n / (st.n + 15);
+  const edge = Math.max(0, Math.min(1, (st.exp + 0.5) / 1.5));
+  const floor = PRIOR * (1 - conf);            // the more we know, the less benefit
+  return +(floor + conf * edge * 0.85).toFixed(3);
+}
+
+/** Weighted agreement across the bots that found the same trade. */
+function ensembleOf(sig) {
+  const names = sig.by && sig.by.length ? sig.by : [sig.setupName].filter(Boolean);
+  if (!names.length) return null;
+  const ids = BOTS.filter((b) => names.includes(b.name)).map((b) => b.id);
+  if (!ids.length) return { n: names.length, weight: 0.15 * names.length,
+                            share: 0.15, names };
+  let w = 0;
+  for (const id of ids) w += botWeight(id);
+  const all = enabledBots().reduce((a, b) => a + botWeight(b.id), 0);
+  return { n: ids.length, weight: +w.toFixed(2),
+           share: all > 0 ? +(w / all).toFixed(2) : 0, names };
+}
+
+/* =========================================================================
+   RISK GATE  —  the part that says no.
+
+   Every rule here exists because of a specific way a signal list turns into
+   a bad month: five correlated altcoin longs that are really one leveraged
+   BTC bet; a losing day answered by trading more; a drawdown answered by
+   trading bigger.
+   ========================================================================= */
+
+function riskState() {
+  const dayAgo = Date.now() - 86400000;
+  const today = CLOSED.filter((s) => s.closedAt >= dayAgo);
+  let dayR = 0;
+  for (const s of today) { const r = rOf(s); if (r != null) dayR += r; }
+  const all = CLOSED.slice().sort((a, b) => a.closedAt - b.closedAt);
+  let eq = 0, peak = 0, dd = 0;
+  for (const s of all) {
+    const r = rOf(s); if (r == null) continue;
+    eq += r; peak = Math.max(peak, eq); dd = Math.max(dd, peak - eq);
+  }
+  return { dayR: +dayR.toFixed(2), dayTrades: today.length,
+           ddR: +dd.toFixed(2), openLongs: OPEN.filter((s) => s.side === "LONG").length,
+           openShorts: OPEN.filter((s) => s.side === "SHORT").length };
+}
+
+/** Why this trade is not allowed, or "" if it is. */
+function riskBlock(sig, state, taken) {
+  const st = state || riskState();
+  if (CFG.dayLossR && st.dayR <= -CFG.dayLossR) {
+    return "daily loss limit reached (" + st.dayR + "R today)";
+  }
+  if (CFG.ddStopR && st.ddR >= CFG.ddStopR) {
+    return "drawdown guard (" + st.ddR + "R off the peak)";
+  }
+  const same = (taken || []).filter((t) => t.side === sig.side).length;
+  if (CFG.maxSameSide && same >= CFG.maxSameSide) {
+    return CFG.maxSameSide + " " + sig.side.toLowerCase() + "s already — that is "
+         + "one market bet, not " + (same + 1) + " trades";
+  }
+  return "";
+}
+
+/* The message, in the shape a channel posts it. Everything on it is a number
+   the app can defend. */
+function telegramCard(s) {
+  const coin = s.symbol.replace("USDT", "");
+  const dot = s.side === "LONG" ? "\u{1F7E2}" : "\u{1F534}";
+  const ens = ensembleOf(s);
+  const risk = Math.abs(s.entry - (s.initialStop != null ? s.initialStop : s.stop));
+  const rr = risk > 0 && s.targets && s.targets.length
+    ? (Math.abs(s.targets[s.targets.length - 1].price - s.entry) / risk).toFixed(1)
+    : "—";
+  const zone = risk > 0
+    ? [round(s.entry - (s.side === "LONG" ? risk * CFG.entryZoneR : 0), s.entry),
+       round(s.entry + (s.side === "LONG" ? 0 : risk * CFG.entryZoneR), s.entry)]
+    : [s.entry, s.entry];
+  const why = confidenceWhy(s, 6)
+    .filter((x) => x.v >= 0.5)
+    .map((x) => "\u2713 " + x.label);
+  const L = [];
+  L.push(`${dot} ${coin}/USDT \u2014 ${s.side}`);
+  L.push("");
+  L.push("Confidence      " + (s.confidence != null ? s.confidence : "—") + " / 100");
+  L.push("Bot agreement   " + (ens ? ens.n + " bot" + (ens.n === 1 ? "" : "s")
+    + " (weighted " + ens.weight + ")" : "—"));
+  L.push("Confirmation    " + (s.agree != null ? s.agree + " / " + s.agreeOf : "—"));
+  L.push("");
+  L.push("Entry");
+  L.push(zone[0] === zone[1] ? String(s.entry) : zone[0] + " \u2013 " + zone[1]);
+  L.push("");
+  L.push("Stop loss");
+  L.push(String(s.stop));
+  L.push("");
+  L.push("Targets");
+  s.targets.forEach((t) => L.push("TP" + t.index + "   " + t.price
+    + "   " + t.roi.toFixed(1) + "%"));
+  L.push("");
+  L.push("Risk / reward   1 : " + rr);
+  L.push("Leverage        " + (s.spot ? "spot" : s.leverage + "x")
+    + "   (stop costs " + CFG.maxLossPct + "% of margin)");
+  L.push("Regime          " + regimeWord(s));
+  L.push("Timeframes      " + (s.stf || CFG.signalTf) + " + " + CFG.trendTf);
+  L.push("State           " + LIFE_LABEL[lifeOf(s)]);
+  if (s.chase) {
+    L.push("Entry now       " + (s.chase.verdict === "take" ? "still good"
+      : s.chase.verdict === "retest"
+        ? "do not chase — wait near " + s.chase.retest
+        : "too late, it has gone"));
+  }
+  L.push("");
+  L.push("Why?");
+  for (const w of (why.length ? why : ["\u2713 " + s.tag])) L.push(w);
+  if (s.rec && s.rec.n >= 4) {
+    L.push("");
+    L.push("This strategy on " + coin + ": " + s.rec.rate + "% reached TP1 over "
+      + s.rec.n + " trades.");
+  }
+  return L.join("\n");
+}
+
+function regimeWord(s) {
+  const a = s.adxAt != null ? s.adxAt : null;
+  if (a == null) return s.side === "LONG" ? "bullish setup" : "bearish setup";
+  return a >= 28 ? "strong trend" : a >= 20 ? "trending"
+       : a >= 15 ? "mixed" : "range";
+}
+
+/* =========================================================================
+   THE ANTI-CHASE GATE
+
+   A great signal at a terrible entry is a losing trade, and until now the app
+   said nothing at all about the entry. It printed a price from the bar the
+   rule fired on and left you to notice, on your own, that the coin had since
+   run four percent.
+
+   Four measurements, all relative to the coin's own volatility so they mean
+   the same thing on BTC as on a mid-cap:
+
+     ran       how far past the signal price it already went, in units of risk
+     vwap      how stretched it is from the rolling volume-weighted average
+     extension how far the leg has travelled from its origin, in ATR
+     spread    what it would cost to get in right now, if the book is known
+
+   The output is not a score. It is one of three answers, because "62/100" is
+   not something you can act on and "wait for the retest at 94.20" is.
+   ========================================================================= */
+
+function rollingVwap(d, i, n) {
+  let pv = 0, v = 0;
+  for (let k = Math.max(0, i - n + 1); k <= i; k++) {
+    const b = d.c[k], typical = (b.h + b.l + b.c) / 3;
+    pv += typical * b.v; v += b.v;
+  }
+  return v > 0 ? pv / v : null;
+}
+
+/** Where did this leg start? Walk back to the last opposite-direction swing. */
+function legOrigin(d, i, long) {
+  let best = d.c[i][long ? "l" : "h"], at = i;
+  for (let k = i; k >= Math.max(1, i - 60); k--) {
+    const v = d.c[k][long ? "l" : "h"];
+    if (long ? v < best : v > best) { best = v; at = k; }
+  }
+  return { price: best, idx: at };
+}
+
+/**
+ * Is this still worth taking, and at what price?
+ * Returns {verdict, why[], retest, ran, stretch, ext, cost}.
+ */
+function chaseCheck(sym, d, i, sig) {
+  const long = sig.side === "LONG";
+  const a = d.atr[i];
+  const risk = Math.abs(sig.entry - (sig.initialStop != null ? sig.initialStop
+                                                             : sig.stop));
+  const now = d.close[d.close.length - 1];
+  if (!(a > 0) || !(risk > 0) || !(now > 0)) return null;
+
+  // 1. how far it already ran, in R — the number that actually decides it
+  const ran = (long ? now - sig.entry : sig.entry - now) / risk;
+
+  // 2. stretch from the rolling VWAP, in ATR
+  const vw = rollingVwap(d, d.c.length - 2, CFG.chaseVwapBars);
+  const stretch = vw ? (long ? now - vw : vw - now) / a : null;
+
+  // 3. how far the whole leg has travelled
+  const origin = legOrigin(d, i, long);
+  const ext = Math.abs(now - origin.price) / a;
+
+  // 4. what it costs to get in, if the book has been read
+  const w = whaleFresh(sym);
+  let cost = null;
+  if (w && w.book && w.book.parts && w.book.parts.length) {
+    // Thin on the side you have to cross is what actually hurts.
+    const band = w.book.parts[0];
+    const side = long ? band.ask : band.bid;
+    const other = long ? band.bid : band.ask;
+    cost = other > 0 ? side / (side + other) : null;   // 0..1, lower is worse
+  }
+
+  const why = [];
+  let verdict = "take";
+  if (ran >= CFG.chaseMaxR) {
+    verdict = "late";
+    why.push("already " + ran.toFixed(1) + "R past the signal price");
+  } else if (ran >= CFG.chaseWarnR) {
+    verdict = "retest";
+    why.push("ran " + ran.toFixed(1) + "R — the edge is in the entry, and it has gone");
+  }
+  if (stretch != null && stretch >= CFG.chaseVwapAtr) {
+    if (verdict === "take") verdict = "retest";
+    why.push(stretch.toFixed(1) + "× ATR above the " + CFG.chaseVwapBars
+      + "-bar VWAP");
+  }
+  if (ext >= CFG.chaseExtAtr) {
+    if (verdict === "take") verdict = "retest";
+    why.push("the leg has run " + ext.toFixed(1) + "× ATR from its origin");
+  }
+  if (cost != null && cost < 0.3) {
+    if (verdict === "take") verdict = "retest";
+    why.push("the book is thin on the side you have to cross");
+  }
+
+  // Where to wait for. Halfway back to the signal price, or the VWAP,
+  // whichever is nearer — a retest level you will never see is not advice.
+  let retest = null;
+  if (verdict === "retest") {
+    const half = sig.entry + (long ? 1 : -1) * risk * CFG.chaseRetestR;
+    retest = vw ? (long ? Math.max(half, vw) : Math.min(half, vw)) : half;
+    retest = round(retest, sig.entry);
+  }
+  if (verdict === "take" && !why.length) {
+    why.push("still within " + CFG.chaseWarnR + "R of the signal price");
+  }
+  return { verdict, why, retest, ran: +ran.toFixed(2),
+           stretch: stretch == null ? null : +stretch.toFixed(2),
+           ext: +ext.toFixed(2), cost: cost == null ? null : +cost.toFixed(2) };
+}
+
+/* =========================================================================
+   THE EXIT BRAIN
+
+   Separate from the entry, because the question "should I still be in this"
+   has almost nothing to do with the question "should I have got in".
+
+   It does four things a fixed target ladder cannot:
+     - takes a partial at the first target and protects the rest
+     - holds a runner while momentum is still expanding
+     - cuts early when momentum flips against the position, rather than
+       waiting for a stop that is now far away
+     - trails behind structure once the trade is well ahead
+
+   And one thing that matters more than all of them: it is measured against
+   the plain fixed-target ladder on the same trade, every time. An exit rule
+   that feels clever and quietly caps every winner at the first target is very
+   easy to write and almost impossible to notice, so the app keeps both
+   numbers and shows the difference.
+   ========================================================================= */
+
+const EXITSTAT = { n: 0, brain: 0, fixed: 0, better: 0, worse: 0 };
+
+/** Replay one signal under managed exits. Returns R, or null. */
+function exitBrainRun(sig, d) {
+  const long = sig.side === "LONG";
+  const risk = Math.abs(sig.entry - (sig.initialStop != null ? sig.initialStop
+                                                             : sig.stop));
+  if (!(risk > 0)) return null;
+  let stop = sig.initialStop != null ? sig.initialStop : sig.stop;
+  let open = 1, banked = 0, peak = 0;
+  const t1 = sig.targets && sig.targets[0] ? sig.targets[0].price : null;
+  let tookPartial = false;
+
+  for (let i = sig.idx + 1; i < d.c.length; i++) {
+    const b = d.c[i];
+    const rNow = (long ? b.c - sig.entry : sig.entry - b.c) / risk;
+    peak = Math.max(peak, (long ? b.h - sig.entry : sig.entry - b.l) / risk);
+
+    // stop first, pessimistically
+    if (long ? b.l <= stop : b.h >= stop) {
+      const r = (long ? stop - sig.entry : sig.entry - stop) / risk;
+      return +(banked + open * r).toFixed(3);
+    }
+
+    // first target: bank a slice and protect the rest
+    if (!tookPartial && t1 && (long ? b.h >= t1 : b.l <= t1)) {
+      const r1 = (long ? t1 - sig.entry : sig.entry - t1) / risk;
+      banked += CFG.exitPartial * r1;
+      open -= CFG.exitPartial;
+      tookPartial = true;
+      stop = sig.entry;                          // the rest rides free
+    }
+
+    // momentum: the MACD histogram expanding in your favour means hold
+    const h = d.mhist[i], hPrev = d.mhist[i - 1];
+    const withYou = long ? h > 0 : h < 0;
+    const expanding = Math.abs(h) > Math.abs(hPrev);
+
+    // flow reversed while ahead: take what is there rather than give it back
+    if (tookPartial && !withYou && rNow > 0.3 && CFG.exitOnFlip) {
+      return +(banked + open * rNow).toFixed(3);
+    }
+
+    // trail behind structure once well ahead, but only when momentum has
+    // stopped expanding — trailing into an accelerating move is how runners die
+    if (peak >= CFG.exitTrailAfter && !(withYou && expanding)) {
+      const trail = long ? b.c - CFG.exitTrailAtr * d.atr[i]
+                         : b.c + CFG.exitTrailAtr * d.atr[i];
+      stop = long ? Math.max(stop, trail) : Math.min(stop, trail);
+    }
+
+    // everything taken
+    const last = sig.targets[sig.targets.length - 1];
+    if (last && (long ? b.h >= last.price : b.l <= last.price)) {
+      const rL = (long ? last.price - sig.entry : sig.entry - last.price) / risk;
+      return +(banked + open * rL).toFixed(3);
+    }
+  }
+  const end = d.close[d.close.length - 1];
+  const rEnd = (long ? end - sig.entry : sig.entry - end) / risk;
+  return +(banked + open * rEnd).toFixed(3);
+}
+
+/** Compare the managed exit with the plain ladder, and keep the score. */
+function exitCompare(sig, d) {
+  if (!sig.closedAt) return;
+  const fixed = rOf(sig);
+  if (fixed == null) return;
+  const brain = exitBrainRun(sig, d);
+  if (brain == null) return;
+  sig.exitR = { brain, fixed: +fixed.toFixed(3) };
+  EXITSTAT.n++;
+  EXITSTAT.brain += brain; EXITSTAT.fixed += fixed;
+  if (brain > fixed + 0.02) EXITSTAT.better++;
+  else if (brain < fixed - 0.02) EXITSTAT.worse++;
+}
+
+/* =========================================================================
+   WHALE / MEGA-TRADER ENGINE
+
+   The footprint of size, not the identity of it. Nothing here claims to know
+   who traded — that is not knowable from public data, and a module that
+   pretends otherwise is selling you a story. What is knowable is aggregate
+   behaviour: unusually large executions, which side was the aggressor, where
+   the book is thick, whether open interest is building with price or against
+   it, and whether the crowd is already positioned the way you are about to be.
+
+   Everything is measured relative to the coin's own normal. A $500k trade is
+   enormous on a mid-cap and invisible on BTC, so a fixed dollar threshold
+   would find "whales" on small coins all day and never on large ones.
+
+   Every reading is checked by several independent bots rather than one
+   threshold. A single cut-off is a coin flip near the boundary; three checks
+   over different windows agreeing is a finding. The module's score is the
+   share of its bots that agree, so a module that is 2-of-3 says 0.67 and
+   means it.
+   ========================================================================= */
+
+const WHALE = {
+  by: new Map(),        // symbol -> reading
+  running: false, cancel: false, step: "", at: 0, coin: 0, err: null,
+};
+
+const FAPI = "https://fapi.binance.com";
+
+async function jget(url) {
+  const r = await fetch(url, { cache: "no-store" });
+  if (!r.ok) throw new Error(r.status + " " + url.split("?")[0].split("/").pop());
+  return r.json();
+}
+
+/* --- the panels. Each module is reviewed by N bots; each bot is one
+   independent check, and the module's score is how many of them agree.  */
+
+/** Large trades, and which side was the aggressor. */
+function whaleTrades(trades) {
+  if (!trades || trades.length < 50) return null;
+  const notional = trades.map((t) => +t.p * +t.q);
+  const sorted = notional.slice().sort((a, b) => a - b);
+  const median = sorted[Math.floor(sorted.length / 2)] || 1;
+  const p99 = sorted[Math.floor(sorted.length * 0.99)] || median;
+  let buy = 0, sell = 0, big = 0, bigBuy = 0, bigSell = 0, all = 0;
+  for (let i = 0; i < trades.length; i++) {
+    const n = notional[i];
+    // Binance marks `m` true when the BUYER was the maker — so the seller was
+    // the aggressor. Getting this backwards inverts the whole module, which
+    // is exactly the kind of bug that looks like a working feature.
+    const aggressiveBuy = trades[i].m === false;
+    all += n;
+    if (aggressiveBuy) buy += n; else sell += n;
+    if (n >= p99) {
+      big++;
+      if (aggressiveBuy) bigBuy += n; else bigSell += n;
+    }
+  }
+  const delta = all > 0 ? (buy - sell) / all : 0;
+  const bigDelta = (bigBuy + bigSell) > 0
+    ? (bigBuy - bigSell) / (bigBuy + bigSell) : 0;
+  const ratio = median > 0 ? p99 / median : 1;
+  const topRatio = median > 0 ? sorted[sorted.length - 1] / median : 1;
+  // three bots on the same question, different angles
+  const bots = [
+    // Against the largest single print, not the 99th percentile. One
+    // enormous trade among three hundred does not move a percentile at all —
+    // the test caught this — and one enormous trade is exactly the footprint
+    // worth catching.
+    { id: "size", says: topRatio >= 25,
+      note: "largest print " + topRatio.toFixed(0) + "× the median" },
+    { id: "delta", says: Math.abs(bigDelta) >= 0.25,
+      note: "large-trade delta " + (bigDelta * 100).toFixed(0) + "%" },
+    { id: "flow", says: Math.abs(delta) >= 0.08,
+      note: "overall flow " + (delta * 100).toFixed(0) + "%" },
+  ];
+  return { median: +median.toFixed(0), p99: +p99.toFixed(0), big,
+           topRatio: +topRatio.toFixed(1),
+           delta: +delta.toFixed(3), bigDelta: +bigDelta.toFixed(3),
+           side: bigDelta > 0 ? "LONG" : bigDelta < 0 ? "SHORT" : null, bots };
+}
+
+/** Where the book is thick, at four depths. Each depth is one bot. */
+function whaleBook(depth, px) {
+  if (!depth || !depth.bids || !depth.bids.length) return null;
+  const bands = [0.001, 0.0025, 0.005, 0.01];
+  const bots = [], parts = [];
+  for (const b of bands) {
+    let bid = 0, ask = 0;
+    for (const [p, q] of depth.bids) { if (+p >= px * (1 - b)) bid += +p * +q; }
+    for (const [p, q] of depth.asks) { if (+p <= px * (1 + b)) ask += +p * +q; }
+    const tot = bid + ask;
+    const imb = tot > 0 ? (bid - ask) / tot : 0;
+    parts.push({ band: (b * 100).toFixed(2) + "%", imb: +imb.toFixed(3),
+                 bid: Math.round(bid), ask: Math.round(ask) });
+    bots.push({ id: "depth" + b, says: Math.abs(imb) >= 0.2,
+      note: (b * 100).toFixed(2) + "% band " + (imb > 0 ? "bid" : "ask")
+          + "-heavy " + Math.abs(imb * 100).toFixed(0) + "%" });
+  }
+  const avg = parts.reduce((a, p) => a + p.imb, 0) / parts.length;
+  return { parts, imb: +avg.toFixed(3),
+           side: avg > 0 ? "LONG" : avg < 0 ? "SHORT" : null, bots };
+}
+
+/** Open interest against price: building, unwinding, or a squeeze setting up. */
+function whaleOi(hist, priceChange) {
+  if (!hist || hist.length < 4) return null;
+  const first = +hist[0].sumOpenInterest, last = +hist[hist.length - 1].sumOpenInterest;
+  if (!(first > 0)) return null;
+  const chg = (last - first) / first * 100;
+  const up = priceChange > 0;
+  // The classic four-quadrant read.
+  const state = chg > 1 && up ? "new longs"
+              : chg > 1 && !up ? "new shorts"
+              : chg < -1 && up ? "shorts covering"
+              : chg < -1 && !up ? "longs closing" : "flat";
+  const bots = [
+    { id: "oiMove", says: Math.abs(chg) >= 2, note: "OI " + chg.toFixed(1) + "%" },
+    { id: "oiAgree", says: (chg > 1 && up) || (chg < -1 && !up),
+      note: state },
+    { id: "oiSqueeze", says: chg > 3 && Math.abs(priceChange) < 1,
+      note: chg > 3 && Math.abs(priceChange) < 1
+        ? "OI building on a flat price — positions stacking" : "no build-up" },
+  ];
+  return { chg: +chg.toFixed(2), state,
+           side: state === "new longs" || state === "shorts covering" ? "LONG"
+               : state === "new shorts" || state === "longs closing" ? "SHORT" : null,
+           bots };
+}
+
+/** Funding: what it costs to hold, and therefore who is crowded. */
+function whaleFunding(prem) {
+  if (!prem || prem.lastFundingRate == null) return null;
+  const rate = +prem.lastFundingRate * 100;      // per 8h, in %
+  const bots = [
+    { id: "fundLevel", says: Math.abs(rate) >= 0.03,
+      note: "funding " + rate.toFixed(4) + "% per 8h" },
+    { id: "fundCrowd", says: Math.abs(rate) >= 0.05,
+      note: Math.abs(rate) >= 0.05
+        ? (rate > 0 ? "longs paying heavily — crowded long"
+                    : "shorts paying heavily — crowded short")
+        : "funding is unremarkable" },
+    { id: "fundFade", says: Math.abs(rate) >= 0.08,
+      note: "extreme — the crowded side is the one that gets liquidated" },
+  ];
+  // Crowding is a fade, not a follow: heavy positive funding means longs are
+  // paying to stay long, which is a reason for caution on a long, not for
+  // enthusiasm.
+  return { rate: +rate.toFixed(4), side: rate > 0.02 ? "SHORT"
+         : rate < -0.02 ? "LONG" : null, bots };
+}
+
+/** Where the retail crowd already sits. Same logic: extremes fade. */
+function whaleCrowd(rows) {
+  if (!rows || !rows.length) return null;
+  const r = +rows[rows.length - 1].longShortRatio;
+  if (!(r > 0)) return null;
+  const bots = [
+    { id: "crowdLevel", says: r >= 2.2 || r <= 0.6,
+      note: "long/short " + r.toFixed(2) },
+    { id: "crowdTrend", says: rows.length > 2
+      && Math.abs(r - +rows[0].longShortRatio) / +rows[0].longShortRatio >= 0.15,
+      note: "positioning shifted from " + (+rows[0].longShortRatio).toFixed(2) },
+    { id: "crowdExtreme", says: r >= 3 || r <= 0.45,
+      note: r >= 3 ? "very crowded long" : r <= 0.45 ? "very crowded short"
+          : "not extreme" },
+  ];
+  return { ratio: +r.toFixed(2),
+           side: r >= 2.2 ? "SHORT" : r <= 0.6 ? "LONG" : null, bots };
+}
+
+/* The weights are the ones you specified, minus the parts that need a
+   websocket. Liquidations and cross-exchange confirmation are declared and
+   left at zero rather than faked. */
+const WHALE_W = { trades: 0.30, book: 0.22, oi: 0.22, funding: 0.14, crowd: 0.12 };
+
+function whaleScore(r) {
+  if (!r) return null;
+  let score = 0, tot = 0, long = 0, short = 0, botN = 0, botYes = 0;
+  for (const k in WHALE_W) {
+    const part = r[k];
+    if (!part || !part.bots) continue;
+    const agree = part.bots.filter((b) => b.says).length / part.bots.length;
+    botN += part.bots.length;
+    botYes += part.bots.filter((b) => b.says).length;
+    score += WHALE_W[k] * agree; tot += WHALE_W[k];
+    if (part.side === "LONG") long += WHALE_W[k] * agree;
+    if (part.side === "SHORT") short += WHALE_W[k] * agree;
+  }
+  if (!tot) return null;
+  const lean = long + short > 0 ? (long - short) / (long + short) : 0;
+  return {
+    score: Math.round(score / tot * 100),
+    side: lean > 0.15 ? "LONG" : lean < -0.15 ? "SHORT" : null,
+    lean: +lean.toFixed(2), bots: botN, agreed: botYes,
+  };
+}
+
+/* Accumulation, distribution, squeeze — each is a combination, not a single
+   reading, which is the whole point of having the parts separately. */
+function whaleState(r, priceChange) {
+  if (!r) return null;
+  const flat = Math.abs(priceChange) < 1.2;
+  const bigBuy = r.trades && r.trades.bigDelta > 0.2;
+  const bigSell = r.trades && r.trades.bigDelta < -0.2;
+  const oiUp = r.oi && r.oi.chg > 1.5;
+  const bidHeavy = r.book && r.book.imb > 0.15;
+  const askHeavy = r.book && r.book.imb < -0.15;
+  if (flat && bigBuy && (oiUp || bidHeavy)) return "possible accumulation";
+  if (flat && bigSell && (oiUp || askHeavy)) return "possible distribution";
+  if (r.funding && Math.abs(r.funding.rate) >= 0.06 && oiUp) {
+    return r.funding.rate > 0 ? "long squeeze risk" : "short squeeze risk";
+  }
+  if (bigBuy && priceChange > 2) return "buying into strength";
+  if (bigSell && priceChange < -2) return "selling into weakness";
+  return "nothing unusual";
+}
+
+/** Read one coin. Five requests; that is the cost, stated plainly. */
+async function whaleRead(sym) {
+  const px = TICK[sym] ? TICK[sym].price : null;
+  const change = TICK[sym] ? TICK[sym].change : 0;
+  const out = { sym, at: Date.now(), change };
+  const grab = async (k, fn) => { try { out[k] = await fn(); } catch (e) { out[k] = null; } };
+  await Promise.all([
+    grab("trades", async () => whaleTrades(
+      await jget(FAPI + "/fapi/v1/aggTrades?limit=1000&symbol=" + sym))),
+    grab("book", async () => whaleBook(
+      await jget(FAPI + "/fapi/v1/depth?limit=500&symbol=" + sym),
+      px || (TICK[sym] && TICK[sym].price) || 0)),
+    grab("oi", async () => whaleOi(
+      await jget(FAPI + "/futures/data/openInterestHist?period=5m&limit=12&symbol="
+        + sym), change)),
+    grab("funding", async () => whaleFunding(
+      await jget(FAPI + "/fapi/v1/premiumIndex?symbol=" + sym))),
+    grab("crowd", async () => whaleCrowd(
+      await jget(FAPI
+        + "/futures/data/globalLongShortAccountRatio?period=5m&limit=6&symbol="
+        + sym))),
+  ]);
+  const sc = whaleScore(out);
+  out.score = sc ? sc.score : null;
+  out.side = sc ? sc.side : null;
+  out.lean = sc ? sc.lean : 0;
+  out.botN = sc ? sc.bots : 0;
+  out.botYes = sc ? sc.agreed : 0;
+  out.state = whaleState(out, change);
+  WHALE.by.set(sym, out);
+  return out;
+}
+
+/** Work through the coin list a few at a time, like everything else here. */
+async function whaleRun(coins) {
+  if (WHALE.running) return;
+  WHALE.running = true; WHALE.cancel = false; WHALE.err = null;
+  const list = (coins && coins.length) ? coins
+    : (UNIVERSE.length ? UNIVERSE : CFG.focus);
+  const batch = [];
+  for (let k = 0; k < Math.min(CFG.whaleCoins, list.length); k++) {
+    batch.push(list[(WHALE.coin + k) % list.length]);
+  }
+  WHALE.coin = (WHALE.coin + batch.length) % Math.max(1, list.length);
+  try {
+    for (const sym of batch) {
+      if (WHALE.cancel) break;
+      WHALE.step = sym.replace("USDT", "");
+      render();
+      await whaleRead(sym);
+      await new Promise((r) => setTimeout(r, 120));   // be polite to the API
+    }
+    WHALE.at = Date.now();
+  } catch (e) {
+    WHALE.err = e.message || String(e);
+  } finally {
+    WHALE.running = false; WHALE.step = ""; render(true);
+  }
+}
+
+/* =========================================================================
+   COHERENCE  —  making the modules argue in the open instead of in secret.
+
+   With twenty modules feeding one number, the dangerous failure is not a
+   module being wrong. It is two modules being confidently opposite and the
+   average coming out as a calm, meaningless middle. A signal at 55 because
+   everything mildly agrees, and a signal at 55 because half the system says
+   buy and half says sell, are completely different situations, and a single
+   number cannot tell them apart.
+
+   So contradictions are found, named, and shown — and they cost confidence
+   rather than quietly cancelling out.
+   ========================================================================= */
+
+const CLASHES = [
+  { a: "whale", b: "btc", why: "large traders and Bitcoin's direction disagree" },
+  { a: "whale", b: "htf", why: "large traders and the higher timeframe disagree" },
+  { a: "crowd", b: "whale", why: "the crowd is positioned against the large flow" },
+  { a: "regime", b: "agree", why: "the market state does not suit the strategy "
+    + "that fired, though the reads agree" },
+  { a: "record", b: "cell", why: "the live record and the backtest disagree "
+    + "about this combination" },
+];
+
+/** Every pair of modules that flatly disagree about this trade. */
+function coherenceOf(sig) {
+  if (!sig || !sig.mods) return { clashes: [], penalty: 0, spread: 0 };
+  const m = sig.mods;
+  const out = [];
+  for (const c of CLASHES) {
+    const x = m[c.a], y = m[c.b];
+    if (x == null || y == null) continue;
+    // One clearly for, one clearly against. Two middling readings are not a
+    // contradiction, they are uncertainty, and calling them a clash would
+    // make the warning meaningless.
+    if (Math.abs(x - y) >= 0.55 && Math.min(x, y) <= 0.3 && Math.max(x, y) >= 0.7) {
+      out.push({ ...c, x, y });
+    }
+  }
+  // How divided the whole panel is, regardless of named pairs.
+  const vals = Object.values(m);
+  const hi = vals.filter((v) => v >= 0.7).length;
+  const lo = vals.filter((v) => v <= 0.3).length;
+  const spread = vals.length ? Math.min(hi, lo) / vals.length : 0;
+  const penalty = Math.min(0.45, out.length * 0.12 + spread * 0.5);
+  return { clashes: out, penalty: +penalty.toFixed(2), spread: +spread.toFixed(2),
+           split: hi + " for · " + lo + " against" };
 }
 
 /* --------------------------------------------------------------------- run */
@@ -2881,6 +5107,7 @@ async function run() {
   }
 
   buildRecord(all);
+  modLearn(all);
   OPEN = [];
   const seen = new Set();
   for (const s of all) {
@@ -2905,6 +5132,18 @@ async function run() {
         SPARE.push(s);
         continue;
       }
+    }
+    if (s.chase && s.chase.verdict === "late") {
+      DROP.weak++;
+      s.belowBar = "too late · " + s.chase.why[0];
+      SPARE.push(s);
+      continue;
+    }
+    if (CFG.modGate && s.confidence != null && s.confidence < CFG.modGate) {
+      DROP.weak++;
+      s.belowBar = "confidence " + s.confidence;
+      SPARE.push(s);
+      continue;
     }
     if (!recordOk(s.symbol)) {
       DROP.weak++;
@@ -3022,6 +5261,21 @@ async function run() {
     }
   }
 
+  // Lifecycle, then the risk gate. Order matters: a trade has to be real
+  // before it is worth refusing.
+  for (const s of OPEN) s.life = lifeOf(s);
+  {
+    const state = riskState();
+    const taken = [];
+    for (const s of OPEN) {
+      if (s.belowBar) continue;
+      const no = riskBlock(s, state, taken);
+      if (no) { s.belowBar = no; s.blocked = true; DROP.weak++; }
+      else taken.push(s);
+    }
+    RISK = state;
+  }
+
   DROP.capped = Math.max(0, OPEN.length - CFG.maxOpen);
   OPEN = OPEN.slice(0, CFG.maxOpen);
 
@@ -3059,6 +5313,9 @@ async function run() {
   }
   FEED = buildFeed(CFG.liveOnly ? all.filter(s=>s.at >= cut)
         : CFG.sinceDeploy ? all.filter(s=>s.at >= startedAt()) : all);
+  // Opt-in, and never in the same breath as the scan: five requests a coin on
+  // top of a scan is what makes a phone stop responding.
+  if (CFG.whaleOn && !WHALE.running) setTimeout(() => whaleRun(), 1500);
   LASTRUN = Date.now(); progress(1);
   alertScan(all);
   setDot(ERROR && !all.length ? "bad" : "");
@@ -3551,14 +5808,14 @@ function batchText() {
   if (!LASTBATCH) return allSignalsText();
   const still = LASTBATCH.list.filter((s) => OPEN.includes(s) && !entryGone(s));
   if (!still.length) return allSignalsText();
-  return still.map(signalText).join("\n\n———\n\n");
+  return still.map(telegramCard).join("\n\n———\n\n");
 }
 
 /** Every takeable signal in one message. */
 function allSignalsText() {
   const list = OPEN.filter((x) => !x.belowBar && !entryGone(x));
   if (!list.length) return "No fresh signals right now.";
-  return list.map(signalText).join("\n\n———\n\n");
+  return list.map(telegramCard).join("\n\n———\n\n");
 }
 
 function card(s, i) {
@@ -3579,6 +5836,23 @@ function card(s, i) {
       ${s.belowBar ? `<span class="b" style="background:#3a2f16;color:#f0c14b"
         >below filter · ${esc(s.belowBar)}</span>` : ""}
       ${botBadge(s)}
+      ${s.chase ? `<span class="b" style="background:${
+        s.chase.verdict === "take" ? "#0f5f34"
+        : s.chase.verdict === "retest" ? "#3a2f16" : "#3a2326"};color:${
+        s.chase.verdict === "take" ? "#8ff0c0"
+        : s.chase.verdict === "retest" ? "#f0c14b" : "#ffb4b7"}">${
+        s.chase.verdict === "take" ? "entry still good"
+        : s.chase.verdict === "retest" ? "wait for retest" : "too late"}</span>`
+        : ""}
+      ${s.life ? `<span class="b" style="background:${
+        s.life === "entry" ? "#0f5f34" : s.life === "invalid" ? "#3a2326"
+        : "var(--sunk)"};color:${s.life === "entry" ? "#8ff0c0"
+        : s.life === "invalid" ? "#ffb4b7" : "#9b9ba3"}"
+        >${LIFE_LABEL[s.life]}</span>` : ""}
+      ${s.confidence != null ? `<span class="b" style="background:${
+        s.confidence >= 70 ? "#0f5f34" : s.confidence >= 45 ? "var(--sunk)" : "#3a2326"
+      };color:${s.confidence >= 70 ? "#8ff0c0" : s.confidence >= 45 ? "#9b9ba3"
+        : "#ffb4b7"}">${s.confidence}/100</span>` : ""}
       ${s.mae ? `<span class="b" style="background:var(--sunk);color:#9b9ba3"
         >${s.mae}R against${s.mfe ? " · " + s.mfe + "R for" : ""}</span>` : ""}
       ${s.keptOver ? `<span class="b" style="background:#1f3d2a;color:#8ff0c0"
@@ -3590,6 +5864,10 @@ function card(s, i) {
         s.agree >= 3 ? "#0f5f34" : s.agree === 2 ? "var(--sunk)" : "#3a2326"
       };color:${s.agree >= 3 ? "#8ff0c0" : s.agree === 2 ? "#9b9ba3" : "#ffb4b7"}"
         >${s.agree}/${s.agreeOf} agree</span>` : ""}${recBadge(s)}${driftBadge(s)}${pill(s)}</div>
+    ${s.chase && s.chase.verdict === "retest" ? `<div class="why"
+      style="color:#f0c14b">Do not chase · ${esc(s.chase.why[0])}${
+      s.chase.retest ? " · wait for a retest near <b>" + s.chase.retest + "</b>"
+      : ""}</div>` : ""}
     <div class="prices"><span>Entry Price: <b>${s.entry}</b></span>
       <span>Stop Loss: <b>${s.stop}</b>${s.be?' <span class="good">(BE)</span>':""}</span></div>
     <div class="cur"><span class="lbl">${s.closedAt?"Final Price":"Current Price"}</span>
@@ -3598,8 +5876,14 @@ function card(s, i) {
         >${sgn(s.roi)}</span></div>
     <div class="tgts">${rows}</div>
     <div class="why">${esc(s.reasons.join(" · "))}</div>
+    ${s.clash && s.clash.length ? `<div class="why" style="color:#ffb08a">
+      Contradiction · ${s.clash.map((c) => esc(c.why)).join(" · ")}
+      ${s.confRaw != null ? "· confidence cut from " + s.confRaw : ""}</div>` : ""}
+    ${s.mods ? `<div class="why" style="color:#7d8794">${
+      confidenceWhy(s, 4).map((x) => esc(x.label) + " "
+        + Math.round(x.v * 100) + "%").join(" · ")}</div>` : ""}
     <div class="cardbtns">
-      <button onclick="event.stopPropagation();copyOut(signalText(SIGBY['${
+      <button onclick="event.stopPropagation();copyOut(telegramCard(SIGBY['${
         esc(sigKey(s))}']),'Signal')">Copy signal</button>
       <button onclick="event.stopPropagation();openChart('${esc(s.symbol)}')">
         View chart</button>
@@ -4007,7 +6291,8 @@ function profileView() {
       ${k[0].toUpperCase()+k.slice(1)}</button>`).join("");
   const stratSeg = [["confluence","Confluence"],["occ","Open/Close"],
                     ["sr","S&R"],["ut","UT Bot"],["tt","Target Trend"],
-                    ["pat","Chart patterns"],
+                    ["pat","Chart patterns"],["brk","Breakout"],
+                    ["rsi","RSI"],["mr","Mean rev"],["mom","Momentum"],
                     ["auto","Auto per pair"]].map(([k,l])=>
     `<button class="chip${k===CFG.strategy?" on":""}"
       onclick="setStrategy('${k}')">${l}</button>`).join("");
@@ -4095,17 +6380,6 @@ function profileView() {
     <div class="hint">Reset clears the record and restarts the clock. The
       Backtest tab is unaffected — it is meant to look at history.</div>
 
-    <h2>Which coins</h2>
-    <div class="seg">${modeSeg}</div>
-    ${CFG.pairMode==="custom" ? pickerBlock()
-      : CFG.pickBy === "movement"
-      ? `<div class="segnote">The ${CFG.pairs} pairs that moved furthest in the
-          last 24h, from everything turning over more than $20m a day. Your
-          focus coins are always included.</div>`
-      : `<div class="segnote">Scanning the ${CFG.pairs} biggest USDT pairs by 24h
-        volume, with your focus coins always included.</div>`}
-    <h2>Which side pays, per coin</h2>
-    ${sideBlock()}
     <h2>Strategy</h2>
     <div class="chips">${stratSeg}</div>
     <div class="segnote">${
@@ -4156,6 +6430,8 @@ function profileView() {
     ${rng("slAtr","Stop distance (x ATR)",CFG.slAtr,0.5,4,0.1,"")}
     ${rng("beAfter","Breakeven after TP",CFG.beAfter,0,5,1,"")}
     ${kv("Target ladder (x ATR)", CFG.tpAtr.join(" / "))}</div>
+    <h2>What the search settled on</h2>
+    ${autoSummary()}
     <h2>Scanner</h2><div class="status">
     ${CFG.pairMode==="custom" ? kv("Pairs", CFG.custom.length+" chosen")
       : rng("pairs","Pairs scanned (top by volume)",CFG.pairs,10,150,10,"")}
@@ -4509,6 +6785,15 @@ const EXPORT_KEYS = [
   "alwaysOn","notify","sound","autoRefreshMin","sinceDeploy","dualScan",
   "onConflict",
   "minWinRate","minRecord","liveOnly","botsPerScan","botBtPairs","botBtBars",
+  "matrixCoins","matrixBars","matrixTop","modOff","modGate",
+  "chaseOn","chaseWarnR","chaseMaxR","chaseVwapBars","chaseVwapAtr",
+  "chaseExtAtr","chaseRetestR","exitBrain","exitPartial","exitOnFlip",
+  "exitTrailAfter","exitTrailAtr",
+  "whaleCoins","whaleOn","whaleTtlMin",
+  "entryZoneR","evoChamps","evoMutations","evoMargin","evoRetireAfter","evoPatience",
+  "dayLossR","ddStopR","maxSameSide",
+  "brkLen","brkAtrStop","brkMinAdx","rsiLen","rsiLow","rsiHigh","rsiWithTrend",
+  "mrLen","mrZ","mrMaxAdx","momLen","momPct","momMinAdx",
   "patPivot","patTol","patFlat","patMaxAge","patCooldown","patMinHeight","patMinSpan",
   "patFlagRun","patFlagPause","patFlagAtr","patCupBars","patTargets",
 ];
@@ -4975,7 +7260,15 @@ function autoPanel() {
     `<button class="${k === CFG.market ? "on" : ""}"
       onclick="setMarket('${k}')">${l}</button>`).join("");
 
-  return `<h2>How often you want signals</h2>
+  // One screen, one order, nothing said twice. The engine first, because that
+  // is the product; then the two choices that are genuinely yours; then the
+  // deployment; then everything else behind one tap. The previous version
+  // stacked three panels that each repeated the coins, the market and the
+  // Deploy card, which is why nobody could tell what was in force.
+  return `${runningNow()}
+    <h2>Bots — the engine</h2>
+    ${botsBlock()}
+    <h2>How often you want signals</h2>
     ${rateBlock()}
     <h2>Which coins</h2>
     <div class="seg">${modeSeg}</div>
@@ -4993,18 +7286,81 @@ function autoPanel() {
       ? "Spot — buys only, no leverage, no shorts."
       : "Futures — long and short, with leverage sized so a stop costs "
         + CFG.maxLossPct + "% of the margin, capped at " + CFG.maxLev + "×."}</div>
-    ${deployCard()}
-    <h2>Bots</h2>
-    ${botsBlock()}
     <h2>Keep it running</h2>
     ${liveBlock()}
+    <h2>Entry quality</h2>
+    <div class="status">
+      <div class="kv"><span class="k">Anti-chase gate</span>
+        <button class="sw${CFG.chaseOn ? " on" : ""}"
+          onclick="CFG.chaseOn=!CFG.chaseOn;writeHash();render(true);refresh()"
+          ></button></div>
+      ${rngRaw("chaseWarnR", "Warn once it has run", CFG.chaseWarnR, 0.2, 2, 0.1, "R")}
+      ${rngRaw("chaseMaxR", "Hide it once it has run", CFG.chaseMaxR, 0.5, 4, 0.1, "R")}
+    </div>
+    <div class="hint">A great signal at a terrible entry is a losing trade. This
+      measures how far price has already run past the signal price, how stretched
+      it is from VWAP, how far the leg has travelled, and what the book costs to
+      cross — then says take it, wait for a retest at a named level, or leave it.</div>
+    <h2>Whale engine</h2>
+    <div class="status">
+      <div class="kv"><span class="k">Read large-trader flow</span>
+        <button class="sw${CFG.whaleOn ? " on" : ""}"
+          onclick="CFG.whaleOn=!CFG.whaleOn;writeHash();render(true)"></button></div>
+      ${rngRaw("whaleCoins", "Coins per pass", CFG.whaleCoins, 1, 10, 1, "")}
+    </div>
+    <div class="hint">Off by default because it costs five extra requests per
+      coin. When on, it runs after each scan rather than during it. Full
+      readings are on the Matrix tab.</div>
+    <h2>Risk gate</h2>
+    <div class="status">
+      ${rngRaw("dayLossR", "Stop after losing (today)", CFG.dayLossR, 0, 10, 0.5, "R")}
+      ${rngRaw("ddStopR", "Stop when this far off the peak", CFG.ddStopR, 0, 20, 1, "R")}
+      ${rngRaw("maxSameSide", "Most trades on one side", CFG.maxSameSide, 0, 20, 1, "")}
+    </div>
+    <div class="hint">Zero turns a limit off. These exist because of specific
+      ways a signal list becomes a bad month: five correlated altcoin longs
+      that are really one leveraged BTC bet, a losing day answered by trading
+      more, a drawdown answered by trading bigger.</div>
     <h2>Which side pays, per coin</h2>
     ${sideBlock()}
-    <h2>What it settled on</h2>
-    ${autoSummary()}`;
+    ${deployCard()}`;
 }
 
-/* Read-only: what the automatic mode has actually chosen. Not adjustable —
+/* What is actually happening right now, in one box, in plain words. The app
+   had grown to the point where you could not answer that question by looking
+   at it, which is a failure however good the machinery underneath is. */
+const rngRaw = (k, label, val, min, max, step, suf) =>
+  `<div class="kv"><span class="k">${label}</span><span class="v">
+   <input type="range" min="${min}" max="${max}" step="${step}" value="${val}"
+    oninput="setv('${k}',this.value,'${suf || ""}')">
+   <span id="v_${k}">${val || "off"}${val ? (suf || "") : ""}</span></span></div>`;
+
+function runningNow() {
+  const on = enabledBots();
+  const names = on.map((b) => b.name).join(", ");
+  return `<div class="card" style="margin-bottom:14px;border-color:${
+      ENGINE.on ? "#2b6b45" : "#3a3a45"}">
+    <div class="kv" style="border:0;padding-top:0">
+      <span class="k" style="font-weight:800;font-size:15px">${ENGINE.on
+        ? '<span class="good">● Running</span>' : "● Stopped"}</span>
+      <span class="v">${OPEN.filter((x) => !x.belowBar && !entryGone(x)).length}
+        signal${OPEN.filter((x) => !x.belowBar && !entryGone(x)).length === 1
+        ? "" : "s"} open</span>
+    </div>
+    <div class="hint" style="margin-bottom:0">${ENGINE.on
+      ? (on.length
+          ? `<b>${on.length}</b> bot${on.length === 1 ? "" : "s"} watching
+             <b>${UNIVERSE.length || CFG.pairs}</b> coins — ${esc(names)}.
+             ${on.length > CFG.botsPerScan
+               ? CFG.botsPerScan + " of them get a turn each scan."
+               : "All of them scan every time."}`
+          : "No bot is switched on, so it is scanning with whatever the screen "
+            + "is set to.")
+      : "Nothing is scanning. Press Run below to start the bots."}</div>
+  </div>`;
+}
+
+/* What the search has actually chosen. Not adjustable —
    showing it as a slider would invite exactly the fiddling this mode exists
    to remove — but hidden numbers are how people stop trusting a machine. */
 function autoSummary() {
@@ -5082,6 +7438,7 @@ function releaseWake() {
    stop hit. The last one matters most — it is the one you would otherwise
    find out about by opening the app and discovering the money already gone. */
 let LASTBATCH = null;
+let RISK = null;
 function alertScan(all) {
   const shout = (title, body, kind, key) => {
     if (!CFG.notify) return;
@@ -5262,14 +7619,20 @@ function botsBlock() {
         <span class="k" style="font-weight:800;font-size:14px">${esc(b.name)}</span>
         <button class="sw${b.on ? " on" : ""}" onclick="toggleBot('${b.id}')"></button>
       </div>
-      <div class="seg" style="margin:4px 0 8px">
-        ${[["fixed","My settings"],["auto","Tunes itself"]].map(([k, l]) =>
+      <div style="color:var(--dim);font-size:12.5px;line-height:1.5;margin:2px 0 9px">
+        <b style="color:var(--txt)">${esc(label)}</b> on
+        <b style="color:var(--txt)">${tfWords(cfg.signalTf + ">" + cfg.trendTf)}</b>
+        — ${b.mode === "auto"
+          ? (b.tf ? "it searched every chart period and chose this one"
+                  : "it will search every chart period and pick the best")
+          : "a fixed period you set"}
+      </div>
+      <div class="seg" style="margin:0 0 9px">
+        ${[["auto","Finds its own period"],["fixed","Period I set"]].map(([k, l]) =>
           `<button class="${b.mode === k ? "on" : ""}"
             onclick="setBotMode('${b.id}','${k}')">${l}</button>`).join("")}
       </div>
       ${b.follow ? kv("Settings", "follows the app · deploy drives it") : ""}
-      ${kv("Strategy", esc(label))}
-      ${kv("Chart period", tfWords(cfg.signalTf + ">" + cfg.trendTf))}
       ${kv("Stop / leverage cap", cfg.slAtr + "× ATR · " + cfg.maxLev + "x")}
       ${kv("Running since", b.startedAt ? age(b.startedAt) : "not started")}
       ${kv("Live record", st.n ? st.n + " trades · TP1 " + st.rate + "% · "
@@ -5289,7 +7652,7 @@ function botsBlock() {
         <button onclick="botTakeCurrent('${b.id}')">Take current</button>
         <button onclick="botBacktest('${b.id}')">Backtest it</button>
         ${b.mode === "auto" ? `<button class="go"
-          onclick="botSearch('${b.id}')">Search now</button>` : ""}
+          onclick="botSearch('${b.id}')">Find its best period</button>` : ""}
         <button onclick="removeBot('${b.id}')">Remove</button>
       </div>
     </div>`;
@@ -5315,8 +7678,14 @@ function botsBlock() {
         different strategy, a different chart period, or both. Ten copies of
         one setting is one opinion repeated, not ten opinions.</div>` : ""}
     <div class="pickbar" style="margin-top:4px">
-      <button class="go" onclick="botBacktestAll()">Backtest every bot</button>
+      <button class="go" onclick="botSearchAll()">Every bot: find its best period</button>
+      <button onclick="botBacktestAll()">Backtest every bot</button>
     </div>
+    <div class="hint">Each bot keeps its own strategy and searches all 33
+      signal/trend period combinations for the one that strategy works best on,
+      scored on history it was not tuned against. It does not go shopping for a
+      different strategy — if it did, every bot would end up running the same
+      one and ten lenses would collapse into one.</div>
     <div class="hint">A backtest is what these rules would have done on candles
       that already happened, over ${CFG.botBtPairs} pairs. It is evidence, not a
       forecast — a bot can win a backtest and lose live, which is why the
@@ -5405,6 +7774,13 @@ async function botSearch(id) {
   const b = botById(id);
   if (!b || BEST.running || OPT.running || DEPLOY.working) return;
   const undo = applySetup(b.cfg);
+  // A bot searches within its own strategy. It is looking for the chart period
+  // and the settings that strategy works best on — all 33 signal/trend
+  // combinations, scored on held-back history. It does not go shopping for a
+  // different strategy, because then every bot would converge on the same one
+  // and ten lenses would collapse back into one.
+  const lock = (b.cfg && b.cfg.strategy) || CFG.strategy;
+  BEST_ONLY = (lock && lock !== "auto") ? lock : null;
   try {
     await findBestSetup();
     const win = BEST.rows[0];
@@ -5435,40 +7811,25 @@ async function botSearch(id) {
     b.nextTune = Date.now() + b.retuneHours * 3600000;
     BEST.rows = [];
   } finally {
+    BEST_ONLY = null;
     undo();
     saveBots(); render(true);
   }
   refresh();
 }
 
-function quickSetup() {
-  const mkt = [["spot","Spot"],["futures","Futures"]].map(([k,l])=>
-    `<button class="${k===CFG.market?"on":""}" onclick="setMarket('${k}')">${l}</button>`
-    ).join("");
-  const hor = [["scalp","Scalp"],["fast","Fast"],["medium","Medium"],
-               ["long","Long"]].map(([k,l])=>
-    `<button class="${k===CFG.horizon?"on":""}" onclick="setHorizon('${k}')">${l}</button>`
-    ).join("");
-  return `<div class="card" style="margin-top:18px;margin-bottom:10px">
-    <div class="stepno">Step 1</div>
-    <div style="font-size:16px;font-weight:800;margin-bottom:3px">Quick setup</div>
-    <div style="color:var(--dim);font-size:12px;line-height:1.5;margin-bottom:11px">
-      Currently <b style="color:var(--txt)">${BT_STRATS[CFG.strategy]
-        || (CFG.strategy === "auto" ? "Auto per pair" : CFG.strategy)}</b>
-      on <b style="color:var(--txt)">${CFG.signalTf}</b> candles,
-      ${CFG.market === "spot" ? "spot buys only" : "futures both ways"},
-      ${CFG.pairMode === "custom" ? CFG.custom.length + " chosen pairs"
-        : "top " + CFG.pairs + " pairs"}${CFG.minAgree
-        ? ", " + CFG.minAgree + "/4 agreement" : ""}.
-    </div>
-    <div class="seg" style="margin-bottom:8px">${mkt}</div>
-    <div class="seg" style="margin-bottom:2px">${hor}</div>
-    <div class="hint" style="margin-bottom:0">Choose how you trade and how fast
-      you want signals. Which coins, risk and filters are in the sections above.
-      When this looks right, press Deploy below.</div>
-  </div>
-  ${deployCard()}`;
+/** Every enabled bot searches for its own best chart period, one at a time. */
+async function botSearchAll() {
+  for (const b of enabledBots()) {
+    if (BEST.cancel) break;
+    await botSearch(b.id);
+  }
+  toast("Every bot searched");
 }
+
+/* quickSetup() is gone. It was a third panel repeating the market segment,
+   the strategy summary and the Deploy card already shown above it — the single
+   biggest source of "why is this here twice". */
 
 /* =========================================================================
    STEP 2 — the Deploy card.
@@ -5507,7 +7868,6 @@ function deployCard() {
     ${speedTuneBlock()}`;
 
   return `<div class="card" style="margin-bottom:6px">
-    <div class="stepno">Step 2</div>
     <div style="font-size:16px;font-weight:800;margin-bottom:3px">Deploy</div>
     <div style="color:var(--dim);font-size:12px;line-height:1.5;margin-bottom:11px">
       ${DEPLOY.on
@@ -5705,6 +8065,7 @@ function render(force) {
           — one is long, the other short. Taking both is paying two spreads to
           hold no position; taking one is picking a side the app cannot pick
           for you.</div>` : "")
+      + riskBar()
       + digestBlock()
       + (pass.length ? pass.map(card).join("")
         + `<button class="btn" onclick="copyOut(allSignalsText(),'${
@@ -5719,6 +8080,7 @@ function render(force) {
         </div>` + gone.slice(0, 5).map(card).join("")
         + (gone.length > 5 ? `<div class="hint">${gone.length - 5} more on the
             Results tab</div>` : "") : "")
+      + radarBlock()
       + (near.length ? `<h2>Did not qualify</h2>
         <div class="segnote">These failed a filter and are shown only because
           "always show at least ${CFG.minShow}" is on. They are not
@@ -5728,12 +8090,14 @@ function render(force) {
             list</button>` : "")
       + (pass.length ? "" : watchList());
   }
+  else if (TAB==="matrix") { $("#title").textContent="Matrix"; body=matrixView(); }
   else if (TAB==="chart") { $("#title").textContent="Chart"; body=chartView(); }
   else if (TAB==="closed") { $("#title").textContent="Results"; body=resultsView(); }
   else {
     $("#title").textContent = "Settings";
     body = autoPanel()
-         + accordion(profileView()) + quickSetup()
+         + "<h2>Everything else</h2>"
+         + accordion(profileView())
          + "<h2>Export this setup</h2>" + exportBlock();
   }
   // Rebuilding the whole view is the single most expensive thing this app
@@ -5802,11 +8166,15 @@ const BT = {
 const BTCACHE = new Map();
 const BT_STRATS = {occ:"Open/Close Cross", confluence:"Confluence",
                    sr:"Support & Resistance", ut:"UT Bot",
-                   tt:"Target Trend", pat:"Chart patterns"};
+                   tt:"Target Trend", pat:"Chart patterns",
+                   brk:"Breakout", rsi:"RSI Strategy",
+                   mr:"Mean Reversion", mom:"Momentum"};
 const BT_KEYS = ["strategy","signalTf","trendTf","requireHtf","minScore",
   "occMaType","occMaLen","occMult","occExitOnCross",
   "srPivot","srZoneAtr","srMinTouch","srMaxAge","srMode","srZoneStop","srBreakAtr",
   "utKey","utAtrLen","ttLen","ttTarget",
+  "brkLen","brkAtrStop","brkMinAdx","rsiLen","rsiLow","rsiHigh","rsiWithTrend",
+  "mrLen","mrZ","mrMaxAdx","momLen","momPct","momMinAdx",
   "patPivot","patTol","patFlat","patMaxAge","patCooldown","patMinHeight","patMinSpan",
   "patFlagRun","patFlagPause","patFlagAtr","patCupBars","patTargets"];
 
@@ -5890,6 +8258,13 @@ function btCandidates(sym, ltf, h) {
   } else if (CFG.strategy === "pat") {
     for (const hit of patScan(d)) {
       const sig = patSignal(sym, d, hit);
+      if (!sig) continue;
+      if (CFG.requireHtf && htfBias(h, d.c[hit.idx].t) !== sig.side) continue;
+      out.push(sig);
+    }
+  } else if (SIMPLE_STRATS[CFG.strategy]) {
+    for (const hit of SIMPLE_STRATS[CFG.strategy](d)) {
+      const sig = simpleSignals(sym, d, hit);
       if (!sig) continue;
       if (CFG.requireHtf && htfBias(h, d.c[hit.idx].t) !== sig.side) continue;
       out.push(sig);
@@ -6092,7 +8467,8 @@ async function runBacktest() {
 
   // ---- 2. replay each strategy over that data
   const list = BT.strategy === "all"
-    ? ["occ","sr","confluence","ut","tt","pat"] : [BT.strategy];
+    ? ["occ","sr","confluence","ut","tt","pat","brk","rsi","mr","mom"]
+    : [BT.strategy];
   for (let k = 0; k < list.length; k++) {
     const strat = list[k];
     BT.note = "Replaying " + BT_STRATS[strat] + "…";
@@ -6309,6 +8685,22 @@ function optSpace(strategy) {
       srBreakAtr: [0.1, 0.2, 0.25, 0.4, 0.6],
     };
   }
+  if (strategy === "brk") {
+    return { ...common, brkLen: [10, 15, 20, 30, 55],
+             brkAtrStop: [1.0, 1.5, 2.5], brkMinAdx: [0, 15, 18, 22, 28] };
+  }
+  if (strategy === "rsi") {
+    return { ...common, rsiLow: [20, 25, 30, 35], rsiHigh: [65, 70, 75, 80],
+             rsiWithTrend: [true, false] };
+  }
+  if (strategy === "mr") {
+    return { ...common, mrLen: [14, 20, 30, 50], mrZ: [1.8, 2.2, 2.6, 3.0],
+             mrMaxAdx: [16, 22, 28] };
+  }
+  if (strategy === "mom") {
+    return { ...common, momLen: [6, 12, 20, 34], momPct: [1.5, 2.5, 4, 6],
+             momMinAdx: [0, 18, 25] };
+  }
   if (strategy === "pat") {
     return {
       ...common,
@@ -6374,6 +8766,13 @@ function optCandidates(sym, ltf, d, h) {
   } else if (CFG.strategy === "pat") {
     for (const hit of patScan(d)) {
       const sig = patSignal(sym, d, hit);
+      if (!sig) continue;
+      if (CFG.requireHtf && htfBias(h, d.c[hit.idx].t) !== sig.side) continue;
+      out.push(sig);
+    }
+  } else if (SIMPLE_STRATS[CFG.strategy]) {
+    for (const hit of SIMPLE_STRATS[CFG.strategy](d)) {
+      const sig = simpleSignals(sym, d, hit);
       if (!sig) continue;
       if (CFG.requireHtf && htfBias(h, d.c[hit.idx].t) !== sig.side) continue;
       out.push(sig);
@@ -6904,7 +9303,14 @@ const BEST = {
   step: "", rows: [], done: 0, err: null, at: 0, seconds: 0,
 };
 
-const BEST_ORDER = ["confluence", "occ", "sr", "ut", "tt"];
+const BEST_ORDER_ALL = ["confluence", "occ", "sr", "ut", "tt", "pat",
+                        "brk", "rsi", "mr", "mom"];
+/* When a bot searches, it is not shopping for a new strategy — it already is
+   one. It is looking for the chart period and settings that strategy works
+   best on. Locking the search to one strategy is what makes a bot a bot
+   rather than a second copy of the global search. */
+let BEST_ONLY = null;
+const BEST_ORDER_OF = () => BEST_ONLY ? [BEST_ONLY] : BEST_ORDER_ALL;
 
 /** Which speed label a signal timeframe belongs to, so the Quick setup
     buttons keep telling the truth after the search changes the duration. */
@@ -7039,7 +9445,7 @@ async function findBestSetup() {
     if (D.screen && OPT_TFS.length > D.keep) {
       const score = new Map();
       BT.bars = D.screenBars;
-      for (const strat of BEST_ORDER) {
+      for (const strat of BEST_ORDER_OF()) {
         if (BEST.cancel) break;
         BEST.step = `Narrowing ${OPT_TFS.length} chart periods — `
                   + `${BT_STRATS[strat] || strat}`;
@@ -7068,10 +9474,10 @@ async function findBestSetup() {
     }
 
     BT.bars = D.bars;
-    for (const strat of BEST_ORDER) {
+    for (const strat of BEST_ORDER_OF()) {
       if (BEST.cancel) break;
       BEST.step = "Tuning " + (BT_STRATS[strat] || strat)
-                + ` (${BEST.done + 1} of ${BEST_ORDER.length})`;
+                + ` (${BEST.done + 1} of ${BEST_ORDER_OF().length})`;
       render(true);
       await optPause();
 
@@ -7152,7 +9558,7 @@ function bestBlock() {
   if (BEST.running) {
     return `<div class="status">
         ${kv("Working", esc(BEST.step || "…"))}
-        ${kv("Strategies done", BEST.done + " of " + BEST_ORDER.length)}
+        ${kv("Strategies done", BEST.done + " of " + BEST_ORDER_OF().length)}
         ${kv("This strategy", OPT.evals ? OPT.evals.toLocaleString()
              + " combinations" : "starting…")}
       </div>
@@ -7287,7 +9693,8 @@ function backtestView() {
 
   const stratSeg = [["occ","Open/Close"],["sr","S&R"],["confluence","Confluence"],
                     ["ut","UT Bot"],["tt","Target Trend"],["pat","Chart patterns"],
-                    ["all","Compare all"]].map(([k,l])=>
+                    ["brk","Breakout"],["rsi","RSI"],["mr","Mean rev"],
+                    ["mom","Momentum"],["all","Compare all"]].map(([k,l])=>
     `<button class="chip${k===BT.strategy?" on":""}"
       onclick="setBtStrategy('${k}')">${l}</button>`).join("");
   const srModeSeg = [["bounce","Bounces"],["breakout","Breakouts"],
@@ -8406,7 +10813,7 @@ let chRz; window.addEventListener("resize", ()=>{
 
 /* ------------------------------------------------------------------- start */
 readHash();
-loadBots();
+loadBots(); loadMatrix(); loadModules(); loadEvo();
 loadSession();
 loadDeploy();
 // The backtester starts from whatever the app is currently set to, then keeps
