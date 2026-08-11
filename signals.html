@@ -2088,14 +2088,198 @@ function dropMySetup() {
   writeHash(); render(true); refresh();
 }
 
+/* =========================================================================
+   BOTS
+
+   A bot is a competitor: its own coins, its own strategy, its own chart
+   period, its own risk, its own clock. Several run side by side over the same
+   candles, every signal is stamped with the bot that produced it, and a
+   leaderboard ranks them on their own live record.
+
+   This replaces Automatic-versus-Manual, which was the wrong shape. A mode is
+   a switch; what you actually want is contestants. A self-tuning bot and a
+   hand-built one are then just two bots with different `mode`, and they can
+   never overwrite each other's settings — which was a real bug, not a
+   preference.
+
+   Nothing here decides which bot is right. It runs them and measures.
+   ========================================================================= */
+const BKEY = "signals.bots.v1";
+const BOT_MAX = 4;
+
+let BOTS = [];
+let ENGINE = { on: false };        // the one Run / Stop switch
+
+function newBot(n, from) {
+  return {
+    id: "b" + n + "-" + Math.random().toString(36).slice(2, 7),
+    name: "Bot " + n,
+    on: false,
+    // A bot that follows uses whatever the app is currently set to rather than
+    // a frozen copy. The first one does, so a deployment still drives the
+    // scanner; freezing it meant a stale snapshot quietly overrode every
+    // deploy on the next scan.
+    follow: false,
+    mode: "fixed",                 // "fixed" = yours; "auto" = re-tunes itself
+    cfg: snapshotSetup(from),
+    startedAt: 0,                  // its clock: nothing older than this counts
+    retuneHours: 6,
+    nextTune: 0,
+    winner: "", tf: "", holdout: null, combo: null, changes: 0,
+    log: [],
+  };
+}
+
+function saveBots() {
+  try {
+    localStorage.setItem(BKEY, JSON.stringify({ bots: BOTS, on: ENGINE.on }));
+  } catch (e) { /* private mode */ }
+}
+
+function loadBots() {
+  try {
+    const o = JSON.parse(localStorage.getItem(BKEY) || "null");
+    if (o && Array.isArray(o.bots) && o.bots.length) {
+      BOTS = o.bots.slice(0, BOT_MAX);
+      ENGINE.on = !!o.on;
+    }
+  } catch (e) { /* nothing to restore */ }
+  if (!BOTS.length) {
+    // First run: one bot holding whatever the app is already set to, so
+    // nothing changes until the user adds a second.
+    const b = newBot(1);
+    b.on = true;
+    b.follow = true;               // the live settings, deploy and all
+    b.name = "Main";
+    BOTS = [b];
+  }
+}
+
+function addBot() {
+  if (BOTS.length >= BOT_MAX) { toast("Four bots is the limit"); return; }
+  // A copy of the current screen, so a new bot starts from something real
+  // rather than from defaults the user has never seen.
+  const b = newBot(BOTS.length + 1);
+  b.on = true;
+  BOTS.push(b);
+  saveBots(); render(true);
+}
+
+function removeBot(id) {
+  BOTS = BOTS.filter((b) => b.id !== id);
+  if (!BOTS.length) {
+    BOTS = [Object.assign(newBot(1), { on: true, follow: true, name: "Main" })];
+  }
+  saveBots(); render(true); refresh();
+}
+
+function botById(id) { return BOTS.find((b) => b.id === id) || null; }
+
+function toggleBot(id) {
+  const b = botById(id);
+  if (!b) return;
+  b.on = !b.on;
+  if (b.on && !b.startedAt) b.startedAt = Date.now();
+  saveBots(); render(true); refresh();
+}
+
+function setBotMode(id, mode) {
+  const b = botById(id);
+  if (!b) return;
+  // Following the app and tuning itself are the same job done twice, and they
+  // would fight. Choosing to self-tune takes a copy first.
+  if (mode === "auto" && b.follow) { b.cfg = snapshotSetup(); b.follow = false; }
+  b.mode = mode;
+  saveBots(); render(true);
+}
+
+/** Copy what is on screen into a bot — the way you build a fixed one. */
+function botTakeCurrent(id) {
+  const b = botById(id);
+  if (!b) return;
+  b.cfg = snapshotSetup();
+  b.follow = false;
+  b.startedAt = Date.now();
+  saveBots(); render(true);
+  toast(b.name + " now holds its own copy of these settings");
+  refresh();
+}
+
+/** Load a bot's settings onto the screen, to look at or edit them. */
+function botEdit(id) {
+  const b = botById(id);
+  if (!b || b.follow) return;      // a following bot already is the screen
+  for (const k of SETUP_KEYS) if (k in b.cfg) CFG[k] = b.cfg[k];
+  PRESET = "custom";
+  writeHash(); render(true);
+  toast("Editing " + b.name + " — press Take current to save it back");
+}
+
+/* --------------------------------------------------------------- the engine */
+function engineToggle() {
+  ENGINE.on = !ENGINE.on;
+  if (ENGINE.on) {
+    const now = Date.now();
+    for (const b of BOTS) if (b.on && !b.startedAt) b.startedAt = now;
+    askNotify(); keepAwake();
+    saveBots(); render(true);
+    refresh();
+  } else {
+    releaseWake();
+    saveBots(); render(true);
+  }
+}
+
+function enabledBots() { return BOTS.filter((b) => b.on); }
+
+/* ------------------------------------------------------------- leaderboard */
+/** Each bot's live record, from the trades it actually produced. */
+function botStats(id) {
+  const rows = CLOSED.filter((s) => (s.setup || "") === id);
+  const n = rows.length;
+  if (!n) return { n: 0, rate: 0, exp: 0, sum: 0 };
+  const wins = rows.filter((s) => s.hits >= 1).length;
+  let sum = 0, counted = 0;
+  for (const s of rows) {
+    const r = rOf(s);
+    if (r != null) { sum += r; counted++; }
+  }
+  return { n, rate: Math.round(wins / n * 100),
+           exp: counted ? +(sum / counted).toFixed(2) : 0, sum: +sum.toFixed(2) };
+}
+
+function leaderboard() {
+  const rows = BOTS.map((b) => ({ b, st: botStats(b.id) }))
+    .sort((a, x) => x.st.exp - a.st.exp);
+  const any = rows.some((r) => r.st.n);
+  if (!any) {
+    return `<div class="segnote">No bot has a finished trade yet. This ranks
+      them on their own live record — not on a backtest — so it fills up as
+      trades resolve.</div>`;
+  }
+  return `<div class="status">${rows.map(({ b, st }) => `<div class="kv">
+      <span class="k">${b.on ? "" : "<span style=\"color:var(--dim)\">off</span> "}${
+        esc(b.name)}<span style="color:#5e5e66"> · ${st.n} trade${
+        st.n === 1 ? "" : "s"}${st.n ? " · TP1 " + st.rate + "%" : ""}</span></span>
+      <span class="v" style="color:${st.exp > 0 ? "var(--green2)"
+        : st.exp < 0 ? "var(--red2)" : "var(--dim)"}">${
+        st.n ? (st.exp > 0 ? "+" : "") + st.exp + "R" : "—"}</span></div>`).join("")}
+    </div>
+    <div class="hint">Average result per trade, in R. Give it a few weeks
+      before believing the order — ten trades tells you almost nothing.</div>`;
+}
+
 /** Which setups this scan should run. The live one always; yours as well. */
 function activeSetups() {
-  const live = { id: "live", name: DEPLOY.on ? "Deployed" : "Current",
-                 cfg: null };
-  if (!CFG.dualScan || !MYSETUP || sameSetup(MYSETUP, snapshotSetup())) {
-    return [live];
+  const on = enabledBots();
+  if (!on.length) {
+    // No bot enabled: scan with whatever is on screen, so the app still works
+    // as a plain scanner rather than going silent.
+    return [{ id: "live", name: "Current settings", cfg: null, startedAt: 0 }];
   }
-  return [live, { id: "mine", name: "My setup", cfg: MYSETUP }];
+  return on.map((b) => ({ id: b.id, name: b.name,
+                          cfg: b.follow ? null : b.cfg,
+                          startedAt: b.startedAt }));
 }
 
 /* --------------------------------------------------------------------- run */
@@ -2181,7 +2365,10 @@ async function run() {
         const s = queue.shift();
         try {
           const r = await scanSymbol(s);
-          for (const sig of r.found) { sig.setup = pass.id; sig.setupName = pass.name; }
+          for (const sig of r.found) {
+            sig.setup = pass.id; sig.setupName = pass.name;
+            sig.botStart = pass.startedAt || 0;
+          }
           all.push(...r.found);
           if (r.near && pass.id === passes[0].id) near.push(r.near);
         } catch (e) { FAILED++; if (!ERROR) ERROR = e.message || String(e); }
@@ -2241,8 +2428,11 @@ async function run() {
     // live right now just because it fired before you opened the app. What is
     // current is decided by the freshness window, and by that alone.
     if (fresh && s.at < fresh) { DROP.stale++; continue; }
-    // Strictest first: fired before this deployment began.
-    if (CFG.sinceDeploy && s.at < startedAt()) { DROP.before++; continue; }
+    // Strictest first: fired before the bot that produced it started. Each
+    // bot has its own clock, so one bot's history cannot leak into another's
+    // freshly deployed list.
+    const from = s.botStart || startedAt();
+    if (CFG.sinceDeploy && s.at < from) { DROP.before++; continue; }
     if (CFG.sideBias) {
       const want = sideBiasOf(s.symbol);
       if (want && s.side !== want) {
@@ -4251,8 +4441,12 @@ function autoPanel() {
       : "Futures — long and short, with leverage sized so a stop costs "
         + CFG.maxLossPct + "% of the margin, capped at " + CFG.maxLev + "×."}</div>
     ${deployCard()}
+    <h2>Bots</h2>
+    ${botsBlock()}
     <h2>Keep it running</h2>
     ${liveBlock()}
+    <h2>Bots</h2>
+    ${botsBlock()}
     <h2>Keep it running</h2>
     ${liveBlock()}
     <h2>Which side pays, per coin</h2>
@@ -4501,6 +4695,104 @@ function liveBlock() {
       it working as long as the page is open, holds the screen awake, and
       alerts you on anything new. For scanning that survives a closed phone,
       use the server bot in Export.</div>`;
+}
+
+/* The control room: one switch, the bots under it, the leaderboard below. */
+function botsBlock() {
+  const on = enabledBots().length;
+  const cards = BOTS.map((b) => {
+    const st = botStats(b.id);
+    const cfg = b.follow ? snapshotSetup() : b.cfg;
+    const label = BT_STRATS[cfg.strategy]
+      || (cfg.strategy === "auto" ? "Best per coin" : cfg.strategy);
+    return `<div class="card" style="margin-bottom:8px;${
+        b.on ? "" : "opacity:.55"}">
+      <div class="kv" style="border:0;padding-top:0">
+        <span class="k" style="font-weight:800;font-size:14px">${esc(b.name)}</span>
+        <button class="sw${b.on ? " on" : ""}" onclick="toggleBot('${b.id}')"></button>
+      </div>
+      <div class="seg" style="margin:4px 0 8px">
+        ${[["fixed","My settings"],["auto","Tunes itself"]].map(([k, l]) =>
+          `<button class="${b.mode === k ? "on" : ""}"
+            onclick="setBotMode('${b.id}','${k}')">${l}</button>`).join("")}
+      </div>
+      ${b.follow ? kv("Settings", "follows the app · deploy drives it") : ""}
+      ${kv("Strategy", esc(label))}
+      ${kv("Chart period", tfWords(cfg.signalTf + ">" + cfg.trendTf))}
+      ${kv("Stop / leverage cap", cfg.slAtr + "× ATR · " + cfg.maxLev + "x")}
+      ${kv("Running since", b.startedAt ? age(b.startedAt) : "not started")}
+      ${kv("Its record", st.n ? st.n + " trades · TP1 " + st.rate + "% · "
+           + (st.exp > 0 ? "+" : "") + st.exp + "R" : "nothing finished yet")}
+      ${b.mode === "auto" ? kv("Won its last search",
+          b.winner ? esc(b.winner) + " on " + tfWords(b.tf) : "not searched yet") : ""}
+      <div class="pickbar" style="margin-top:9px">
+        <button onclick="botEdit('${b.id}')">Edit</button>
+        <button onclick="botTakeCurrent('${b.id}')">Take current</button>
+        ${b.mode === "auto" ? `<button class="go"
+          onclick="botSearch('${b.id}')">Search now</button>` : ""}
+        <button onclick="removeBot('${b.id}')">Remove</button>
+      </div>
+    </div>`;
+  }).join("");
+
+  return `<div class="card" style="margin-bottom:10px">
+      <div class="kv" style="border:0;padding:0">
+        <span class="k" style="font-weight:800;font-size:15px">${ENGINE.on
+          ? '<span class="good">● Running</span>' : "Stopped"}</span>
+        <span class="v">${on} of ${BOTS.length} bot${BOTS.length === 1 ? "" : "s"} on</span>
+      </div>
+      <button class="btn ${ENGINE.on ? "" : "gold"}" style="margin-top:10px"
+        onclick="engineToggle()">${ENGINE.on ? "Stop everything" : "Run"}</button>
+      <div class="hint" style="margin-bottom:0">One switch. While it is on,
+        every enabled bot scans on its own clock and the self-tuning ones keep
+        searching. Nothing runs when it is off.</div>
+    </div>
+    ${cards}
+    ${BOTS.length < BOT_MAX ? `<button class="btn" onclick="addBot()">Add a bot
+      (${BOTS.length} of ${BOT_MAX})</button>` : ""}
+    <h2>Leaderboard</h2>
+    ${leaderboard()}`;
+}
+
+/** Run the full search for one bot and keep the result on that bot. */
+async function botSearch(id) {
+  const b = botById(id);
+  if (!b || BEST.running || OPT.running || DEPLOY.working) return;
+  const undo = applySetup(b.cfg);
+  try {
+    await findBestSetup();
+    const win = BEST.rows[0];
+    if (win && win.holdout.n >= 8 && win.holdout.netPct > 0) {
+      // The winner's settings become this bot's settings — and only this
+      // bot's. No other bot and nothing on screen is touched.
+      const next = snapshotSetup();
+      for (const k in win.combo) {
+        if (k === "tfPair") {
+          const [sig, tr] = String(win.combo[k]).split(">");
+          if (sig && tr) { next.signalTf = sig; next.trendTf = tr; }
+          continue;
+        }
+        if (k in next) next[k] = win.combo[k];
+      }
+      next.strategy = win.strat;
+      b.cfg = next;
+      b.winner = win.label; b.tf = win.combo.tfPair || "";
+      b.holdout = win.holdout; b.combo = win.combo;
+      b.startedAt = Date.now();          // its clock restarts with its settings
+      b.changes++;
+      b.log.unshift({ at: Date.now(), text: win.label + " — "
+        + (win.holdout.netPct >= 0 ? "+" : "") + win.holdout.netPct + "%" });
+    } else {
+      b.log.unshift({ at: Date.now(), text: "nothing beat what it is running" });
+    }
+    b.log = b.log.slice(0, 6);
+    b.nextTune = Date.now() + b.retuneHours * 3600000;
+    BEST.rows = [];
+  } finally {
+    undo();
+    saveBots(); render(true);
+  }
+  refresh();
 }
 
 function quickSetup() {
@@ -7439,6 +7731,7 @@ let chRz; window.addEventListener("resize", ()=>{
 /* ------------------------------------------------------------------- start */
 readHash();
 loadMode();
+loadBots();
 loadSession();
 loadDeploy();
 // The backtester starts from whatever the app is currently set to, then keeps
@@ -7452,6 +7745,8 @@ setInterval(()=>{
   // thread, and the phone loses. The search finishes, then scanning resumes.
   if (BUSY || OPT.running || BEST.running || DEPLOY.working) return;
   if (document.visibilityState !== "visible") return;
+  // The one switch. Off means off — no scanning, no searching, nothing.
+  if (!ENGINE.on && !CFG.alwaysOn) return;
   if (Date.now()-LASTRUN > CFG.autoRefreshMin*60000) refresh();
 }, 5000);
 // The wake lock is dropped by the browser whenever the tab is backgrounded,
