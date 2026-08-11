@@ -439,6 +439,25 @@ const CFG = {
   srMode: "both",          // "bounce" | "breakout" | "both"
   srZoneStop: true,        // put the stop just beyond the zone, not at 1.5 ATR
   srBreakAtr: 0.25,        // how far past the zone a close must be to be a break
+
+  // Chart patterns. Built from confirmed pivots only, and never a signal until
+  // the shape actually breaks.
+  patPivot: 4,             // bars either side that make a swing a pivot
+  patTol: 2.5,             // % apart two prices can be and still count as equal
+  patFlat: 1.2,            // % drift across the shape that still counts as level
+  patMaxAge: 140,          // a pivot older than this is no longer part of a shape
+  patCooldown: 8,          // bars between pattern signals on one coin
+  patMinHeight: 1.2,       // shapes shorter than this many ATR are not worth trading
+  patMinSpan: 14,          // bars a shape must span before it counts as one
+  patFlagRun: 12,          // bars of impulse that make a flagpole
+  patFlagPause: 8,         // bars of consolidation that make the flag
+  patFlagAtr: 3,           // how big the pole must be, in ATR
+  patCupBars: 60,          // window a cup and handle is looked for in
+  patTargets: [0.5, 1.0, 1.5, 2.0, 3.0],   // in pattern heights, not ATR
+
+  botsPerScan: 4,          // how many bots get a turn each scan
+  botBtPairs: 12,          // pairs in a bot's own backtest
+  botBtBars: 1000,         // candles of history it replays
 };
 
 /* One tap sets every filter at once. Fewer, stricter signals on the left;
@@ -511,43 +530,14 @@ let TAB = "home", BUSY = false, ERROR = null, LASTRUN = 0, SOURCE = null;
 let RTAB = "live";           // Results sub-tab: "live" scan window | "bt" backtest
 
 /* =========================================================================
-   TWO MODES.
+   ONE ENGINE.
 
-   Automatic: you choose the coins and whether you trade spot or futures.
-   Everything else — strategy, chart period, filters, stops, position size —
-   is decided by the search and re-decided on a schedule. Nothing else is
-   shown, because nothing else is yours to set.
-
-   Manual: every control, exactly as before.
-
-   The same number was previously adjustable from three screens, which is how
-   a person ends up not knowing what is actually in force.
+   There used to be an Automatic mode and a Manual mode, and you had to pick.
+   That was a hedge on my part, and it cost more than it bought: the same
+   number was settable from two places, so nobody could tell what was actually
+   in force. There is one screen now. The bots do the work; every control is
+   still there, one tap down, for when you want to look.
    ========================================================================= */
-const MKEY = "signals.mode.v1";
-let MODE = "auto";
-function loadMode() {
-  try { const m = localStorage.getItem(MKEY); if (m === "manual" || m === "auto") MODE = m; }
-  catch (e) { /* private mode */ }
-}
-function setMode(m) {
-  if (MODE === m) return;
-  MODE = m;
-  try { localStorage.setItem(MKEY, m); } catch (e) {}
-  if (m === "auto" && RTAB === "bt") RTAB = "live";
-  render(true);
-}
-function modeCard() {
-  const seg = [["auto", "Automatic"], ["manual", "Manual"]].map(([k, l]) =>
-    `<button class="${k === MODE ? "on" : ""}" onclick="setMode('${k}')">${l}</button>`
-  ).join("");
-  return `<div class="seg" style="margin-bottom:8px">${seg}</div>
-    <div class="segnote" style="margin-bottom:14px">${MODE === "auto"
-      ? "You pick the coins. The search picks the strategy, the chart period, "
-        + "the filters and the risk, and re-checks them on a schedule."
-      : "Every control is yours. Nothing is decided for you, and the "
-        + "deployment will not overwrite your settings unless you press "
-        + "Deploy."}</div>`;
-}
 let TICK = {};               // last full ticker snapshot, by symbol
 
 /* Signal tracking starts the moment you open the app. Anything the strategy
@@ -577,7 +567,7 @@ function saveSession() {
 }
 function resetSession() {
   SESSION.startedAt = Date.now(); SESSION.scans = 0;
-  ARCHIVE.clear(); OPEN = []; CLOSED = []; FEED = [];
+  ARCHIVE.clear(); HELD.clear(); OPEN = []; CLOSED = []; FEED = [];
   saveSession();
   toast("Reset — tracking from right now");
   render(true);
@@ -1411,6 +1401,281 @@ function srSignal(sym, d, hit) {
   return sig;
 }
 
+/* =========================================================================
+   CHART PATTERNS
+
+   The shapes every chart-reading course teaches, found by rule instead of by
+   eye: wedges, flags, pennants, triangles, rectangles, double tops and
+   bottoms, head and shoulders both ways, cup and handle.
+
+   Two things make this honest rather than decorative:
+
+   * A pattern is built only from *confirmed* pivots. A swing high at bar p is
+     not knowable until bar p+L, and `pivots()` records that as `conf`. The
+     replay never uses a pivot before the chart could have drawn it, so the
+     backtest is not quietly reading the future.
+
+   * A pattern is not a signal until it breaks. The shape alone means nothing —
+     what is traded is the close through the line, on the bar it happens.
+
+   Every pattern carries its own measured move (the classic height projection)
+   and its own structural stop (the far side of the shape), which is the whole
+   reason for using patterns instead of an ATR guess in both directions.
+   ========================================================================= */
+
+const PAT_NAMES = {
+  dbot:"Double bottom", dtop:"Double top",
+  ihs:"Inverted head & shoulders", hs:"Head & shoulders",
+  fwedge:"Falling wedge", rwedge:"Rising wedge",
+  atri:"Ascending triangle", dtri:"Descending triangle", stri:"Symmetrical triangle",
+  rect:"Rectangle", bflag:"Bull flag", sflag:"Bear flag",
+  bpen:"Bullish pennant", spen:"Bearish pennant", cup:"Cup and handle",
+};
+
+/** Straight line through two pivots, read at any bar index. */
+function patLine(a, b) {
+  const dx = b.i - a.i;
+  if (!dx) return null;
+  const m = (b.price - a.price) / dx;
+  return { m, at: (x) => a.price + m * (x - a.i) };
+}
+
+/** Did this bar close through `lvl`, when the one before it had not? */
+function brokeUp(d, i, lvl)   { return d.close[i] > lvl && d.close[i-1] <= lvl; }
+function brokeDown(d, i, lvl) { return d.close[i] < lvl && d.close[i-1] >= lvl; }
+
+/* One pattern found at bar i, or null. `hi` and `lo` are the recent confirmed
+   pivot highs and lows, oldest first. */
+function patAt(d, i, hi, lo) {
+  const px = d.close[i], a = d.atr[i];
+  if (!(a > 0) || !(px > 0)) return null;
+  const tol  = CFG.patTol / 100;               // "the same price, near enough"
+  const flat = CFG.patFlat / 100;              // "level, near enough"
+  const near = (x, y) => Math.abs(x - y) / ((x + y) / 2) <= tol;
+  const minH = CFG.patMinHeight * a;           // ignore shapes too small to trade
+  const H = hi.slice(-3), L = lo.slice(-3);
+  // A shape three bars wide is not a double bottom, it is two candles. Noise
+  // throws up plenty of those, and counting them is how a pattern scanner ends
+  // up finding a pattern every time you look.
+  const wide = (a1, b1) => Math.abs(b1.i - a1.i) >= CFG.patMinSpan;
+  const out = (kind, side, level, stop, height, why) => {
+    if (!(height >= minH)) return null;
+    // A stop on the wrong side of the entry is not a stop.
+    if (side === "LONG" ? !(stop < px) : !(stop > px)) return null;
+    return { kind, side, idx: i, level, stop, height,
+             why: [PAT_NAMES[kind] + " — broke " + (side === "LONG" ? "up" : "down"),
+                   ...why] };
+  };
+
+  // ---- double bottom / double top: two equal extremes with a swing between
+  if (L.length >= 2 && H.length >= 1) {
+    const l1 = L[L.length-2], l2 = L[L.length-1];
+    const mid = H.filter((h) => h.i > l1.i && h.i < l2.i).pop();
+    if (mid && wide(l1, l2) && near(l1.price, l2.price) && brokeUp(d, i, mid.price)) {
+      const base = Math.min(l1.price, l2.price);
+      const r = out("dbot", "LONG", mid.price, base - 0.25*a, mid.price - base,
+        ["two lows at " + round(base, px) + " held",
+         "broke the high between them"]);
+      if (r) return r;
+    }
+  }
+  if (H.length >= 2 && L.length >= 1) {
+    const h1 = H[H.length-2], h2 = H[H.length-1];
+    const mid = L.filter((l) => l.i > h1.i && l.i < h2.i).pop();
+    if (mid && wide(h1, h2) && near(h1.price, h2.price) && brokeDown(d, i, mid.price)) {
+      const top = Math.max(h1.price, h2.price);
+      const r = out("dtop", "SHORT", mid.price, top + 0.25*a, top - mid.price,
+        ["two highs at " + round(top, px) + " rejected",
+         "broke the low between them"]);
+      if (r) return r;
+    }
+  }
+
+  // ---- head and shoulders: middle extreme clearly beyond two matching ones
+  if (H.length >= 3 && L.length >= 2) {
+    const [s1, head, s2] = H.slice(-3);
+    const necks = L.filter((l) => l.i > s1.i && l.i < s2.i).slice(-2);
+    if (necks.length === 2 && wide(s1, s2) && near(s1.price, s2.price)
+        && head.price > Math.max(s1.price, s2.price) * (1 + tol)) {
+      const ln = patLine(necks[0], necks[1]);
+      const neck = ln ? ln.at(i) : Math.min(necks[0].price, necks[1].price);
+      if (brokeDown(d, i, neck)) {
+        const r = out("hs", "SHORT", neck, s2.price + 0.25*a, head.price - neck,
+          ["head at " + round(head.price, px) + " above both shoulders",
+           "neckline broken"]);
+        if (r) return r;
+      }
+    }
+  }
+  if (L.length >= 3 && H.length >= 2) {
+    const [s1, head, s2] = L.slice(-3);
+    const necks = H.filter((h) => h.i > s1.i && h.i < s2.i).slice(-2);
+    if (necks.length === 2 && wide(s1, s2) && near(s1.price, s2.price)
+        && head.price < Math.min(s1.price, s2.price) * (1 - tol)) {
+      const ln = patLine(necks[0], necks[1]);
+      const neck = ln ? ln.at(i) : Math.max(necks[0].price, necks[1].price);
+      if (brokeUp(d, i, neck)) {
+        const r = out("ihs", "LONG", neck, s2.price - 0.25*a, neck - head.price,
+          ["head at " + round(head.price, px) + " below both shoulders",
+           "neckline broken"]);
+        if (r) return r;
+      }
+    }
+  }
+
+  // ---- two trendlines: wedges, triangles, rectangles
+  if (H.length >= 2 && L.length >= 2) {
+    const hA = H[H.length-2], hB = H[H.length-1];
+    const lA = L[L.length-2], lB = L[L.length-1];
+    const upper = patLine(hA, hB), lower = patLine(lA, lB);
+    if (upper && lower) {
+      const uNow = upper.at(i), lNow = lower.at(i);
+      const span = Math.max(hB.i, lB.i) - Math.min(hA.i, lA.i);
+      // Slope as a fraction of price across the whole shape, so "flat" means
+      // the same thing on a $0.02 coin as on a $60,000 one.
+      const uSlope = upper.m * span / px, lSlope = lower.m * span / px;
+      const wA = Math.abs(upper.at(Math.min(hA.i, lA.i)) - lower.at(Math.min(hA.i, lA.i)));
+      const wB = Math.abs(uNow - lNow);
+      const converging = wB < wA * 0.75 && wB > 0;
+      if (span < CFG.patMinSpan) return null;
+      const uFlat = Math.abs(uSlope) < flat, lFlat = Math.abs(lSlope) < flat;
+      const height = wA;
+      const why2 = (t) => [t, "measured from the widest part of the shape"];
+
+      if (converging && uSlope < -flat && lSlope < -flat && brokeUp(d, i, uNow))
+        { const r = out("fwedge","LONG",uNow, Math.min(lB.price,lNow) - 0.25*a, height,
+            why2("both edges sloping down and closing in")); if (r) return r; }
+      if (converging && uSlope > flat && lSlope > flat && brokeDown(d, i, lNow))
+        { const r = out("rwedge","SHORT",lNow, Math.max(hB.price,uNow) + 0.25*a, height,
+            why2("both edges sloping up and closing in")); if (r) return r; }
+      if (uFlat && lSlope > flat && brokeUp(d, i, uNow))
+        { const r = out("atri","LONG",uNow, Math.min(lB.price,lNow) - 0.25*a, height,
+            why2("flat highs, rising lows")); if (r) return r; }
+      if (lFlat && uSlope < -flat && brokeDown(d, i, lNow))
+        { const r = out("dtri","SHORT",lNow, Math.max(hB.price,uNow) + 0.25*a, height,
+            why2("flat lows, falling highs")); if (r) return r; }
+      if (converging && uSlope < -flat && lSlope > flat) {
+        if (brokeUp(d, i, uNow))
+          { const r = out("stri","LONG",uNow, lNow - 0.25*a, height,
+              why2("range squeezing from both sides")); if (r) return r; }
+        if (brokeDown(d, i, lNow))
+          { const r = out("stri","SHORT",lNow, uNow + 0.25*a, height,
+              why2("range squeezing from both sides")); if (r) return r; }
+      }
+      if (uFlat && lFlat) {
+        if (brokeUp(d, i, uNow))
+          { const r = out("rect","LONG",uNow, lNow - 0.25*a, height,
+              why2("range broken to the upside")); if (r) return r; }
+        if (brokeDown(d, i, lNow))
+          { const r = out("rect","SHORT",lNow, uNow + 0.25*a, height,
+              why2("range broken to the downside")); if (r) return r; }
+      }
+    }
+  }
+
+  // ---- flags and pennants: a hard move, a shallow pause, then the move again
+  {
+    const cons = CFG.patFlagPause, imp = CFG.patFlagRun;
+    const s = i - cons - imp, m = i - cons;
+    if (s >= 1) {
+      let runLo = Infinity, runHi = -Infinity, poleLo = Infinity, poleHi = -Infinity;
+      for (let k = s; k <= m; k++) {
+        poleLo = Math.min(poleLo, d.c[k].l); poleHi = Math.max(poleHi, d.c[k].h);
+      }
+      // The consolidation stops at the bar *before* this one. Including the
+      // current bar would mean the price had to break a high it was itself
+      // setting, so a flag could never fire.
+      for (let k = m; k < i; k++) {
+        runLo = Math.min(runLo, d.c[k].l); runHi = Math.max(runHi, d.c[k].h);
+      }
+      const pole = poleHi - poleLo, pause = runHi - runLo;
+      const up = d.close[m] > d.close[s], strong = pole >= CFG.patFlagAtr * a;
+      // The pause has to be a pause. A "flag" as tall as its own pole is just
+      // a range, and calling it a flag would be the app flattering the chart.
+      const shallow = pause > 0 && pause < pole * 0.55;
+      if (strong && shallow) {
+        const tight = pause < pole * 0.3;               // pennant, not flag
+        if (up && brokeUp(d, i, runHi)) {
+          const r = out(tight ? "bpen" : "bflag", "LONG", runHi, runLo - 0.25*a, pole,
+            ["a " + Math.round(pole / a) + "×ATR run up, then a tight pause",
+             "broke out of the pause the same way"]);
+          if (r) return r;
+        }
+        if (!up && brokeDown(d, i, runLo)) {
+          const r = out(tight ? "spen" : "sflag", "SHORT", runLo, runHi + 0.25*a, pole,
+            ["a " + Math.round(pole / a) + "×ATR run down, then a tight pause",
+             "broke out of the pause the same way"]);
+          if (r) return r;
+        }
+      }
+    }
+  }
+
+  // ---- cup and handle: a rounded base between two matching rims, then a
+  //      small pullback, then through the rim
+  {
+    const W = CFG.patCupBars;
+    if (i - W >= 1) {
+      let lowI = i - W, lowV = Infinity, rim = -Infinity;
+      for (let k = i - W; k <= i; k++) {
+        if (d.c[k].l < lowV) { lowV = d.c[k].l; lowI = k; }
+      }
+      const leftEnd = i - W + Math.floor(W * 0.25);
+      const rightStart = i - Math.floor(W * 0.25);
+      let leftRim = -Infinity, rightRim = -Infinity;
+      for (let k = i - W; k <= leftEnd; k++) leftRim = Math.max(leftRim, d.c[k].h);
+      for (let k = rightStart; k <= i; k++) rightRim = Math.max(rightRim, d.c[k].h);
+      rim = Math.min(leftRim, rightRim);
+      const middle = lowI > i - W + W*0.25 && lowI < i - W*0.2;   // low in the bowl
+      const depth = rim - lowV;
+      if (middle && near(leftRim, rightRim) && depth > 0 && brokeUp(d, i, rim)) {
+        // the handle: the dip after the right rim must be shallow
+        let handle = Infinity;
+        for (let k = rightStart; k <= i; k++) handle = Math.min(handle, d.c[k].l);
+        if (rim - handle < depth * 0.5) {
+          const r = out("cup", "LONG", rim, handle - 0.25*a, depth,
+            ["rounded base with matching rims", "shallow handle, then through the rim"]);
+          if (r) return r;
+        }
+      }
+    }
+  }
+
+  return null;
+}
+
+/* Walk the candles and record every pattern break, in order. */
+function patScan(d) {
+  const out = [], c = d.c;
+  const all = pivots(c, CFG.patPivot);
+  if (all.length < 4 || c.length < 220) return out;
+  let p = 0, last = -999;
+  for (let i = 210; i < c.length - 1; i++) {
+    while (p < all.length && all[p].conf <= i) p++;
+    if (i - last < CFG.patCooldown) continue;
+    const hi = [], lo = [];
+    for (let k = p - 1; k >= 0; k--) {
+      if (i - all[k].i > CFG.patMaxAge) break;
+      (all[k].type === "H" ? hi : lo).unshift(all[k]);
+      if (hi.length >= 4 && lo.length >= 4) break;
+    }
+    if (hi.length < 2 || lo.length < 2) continue;
+    const hit = patAt(d, i, hi, lo);
+    if (hit) { out.push(hit); last = i; }
+  }
+  return out;
+}
+
+function patSignal(sym, d, hit) {
+  // Targets are measured in the pattern's own height — the classic projection
+  // — not in ATR. A shape that promises a 3% move should not be sold with a
+  // 12% target just because the coin happens to be volatile today.
+  const sig = buildSignal(sym, d, hit.idx, hit.side, PAT_NAMES[hit.kind],
+    hit.why, hit.stop, hit.height, CFG.patTargets);
+  if (sig) { sig.pattern = hit.kind; sig.patLevel = round(hit.level, sig.entry); }
+  return sig;
+}
+
 /* Strategy 2: Open/Close Cross.
    The chosen MA is applied to the open series and the close series on a higher
    timeframe (base x multiplier). Close MA crossing above the open MA is a long,
@@ -1598,9 +1863,9 @@ function agreementAt(votes, i, side) {
 const AUTO = { ttl: 6 * 3600 * 1000, perScan: 6, left: 0, decided: 0, waiting: 0 };
 
 const AUTOPICK = new Map();          // symbol -> {strat, score, at}
-const AUTO_STRATS = ["confluence", "occ", "ut", "tt", "sr"];
+const AUTO_STRATS = ["confluence", "occ", "ut", "tt", "sr", "pat"];
 const STRAT_SHORT = {confluence:"Confluence", occ:"Open/Close", sr:"S&R",
-                     ut:"UT Bot", tt:"Target Trend"};
+                     ut:"UT Bot", tt:"Target Trend", pat:"Patterns"};
 
 /** R-multiple expectancy of a set of tracked signals. */
 function autoScore(sigs, fromIdx) {
@@ -1671,6 +1936,13 @@ function autoSignals(sym, d, h, ltf) {
   } else if (CFG.strategy === "sr") {
     for (const hit of srScan(d)) {
       const sig = srSignal(sym, d, hit);
+      if (!sig) continue;
+      if (CFG.requireHtf && htfBias(h, d.c[hit.idx].t) !== sig.side) continue;
+      track(sig, d); out.push(sig);
+    }
+  } else if (CFG.strategy === "pat") {
+    for (const hit of patScan(d)) {
+      const sig = patSignal(sym, d, hit);
       if (!sig) continue;
       if (CFG.requireHtf && htfBias(h, d.c[hit.idx].t) !== sig.side) continue;
       track(sig, d); out.push(sig);
@@ -1956,6 +2228,29 @@ async function scanSymbolBody(sym, __st) {
     return {found, near};
   }
 
+  if (CFG.strategy === "pat") {
+    const hits = patScan(d);
+    for (const hit of hits) {
+      const sig = gate(patSignal(sym, d, hit));
+      if (!sig) continue;
+      if (CFG.requireHtf && htfBias(h, d.c[hit.idx].t) !== sig.side) continue;
+      track(sig, d);
+      found.push(sig);
+    }
+    // "Closest to firing" for a pattern is the newest shape on the chart,
+    // measured by how far price sits from the line it has to break.
+    const lastBar = d.c.length - 2;
+    if (lastBar > 0 && hits.length) {
+      const h0 = hits[hits.length - 1];
+      near = {symbol: sym, side: h0.side,
+              gap: Math.abs((d.close[lastBar] - h0.level) / d.close[lastBar] * 100),
+              agrees: true};
+    }
+    if (autoKeep) for (const k in autoKeep) CFG[k] = autoKeep[k];
+    if (__st.done) __st.done();
+    return {found, near};
+  }
+
   if (CFG.strategy === "sr") {
     for (const hit of srScan(d)) {
       const sig = gate(srSignal(sym, d, hit));
@@ -2042,6 +2337,9 @@ const SETUP_KEYS = [
   "cooldownBars", "occMaType", "occMaLen", "occMult", "occExitOnCross",
   "utKey", "utAtrLen", "ttLen", "ttTarget",
   "srPivot", "srZoneAtr", "srMinTouch", "srMode", "srZoneStop", "srBreakAtr",
+  "patPivot", "patTol", "patFlat", "patMaxAge", "patCooldown",
+  "patMinHeight", "patMinSpan", "patFlagRun", "patFlagPause", "patFlagAtr", "patCupBars",
+  "patTargets",
 ];
 
 /* The setup you built by hand, kept aside so the deployment cannot eat it. */
@@ -2105,7 +2403,7 @@ function dropMySetup() {
    Nothing here decides which bot is right. It runs them and measures.
    ========================================================================= */
 const BKEY = "signals.bots.v1";
-const BOT_MAX = 4;
+const BOT_MAX = 10;
 
 let BOTS = [];
 let ENGINE = { on: false };        // the one Run / Stop switch
@@ -2155,14 +2453,107 @@ function loadBots() {
   }
 }
 
-function addBot() {
-  if (BOTS.length >= BOT_MAX) { toast("Four bots is the limit"); return; }
-  // A copy of the current screen, so a new bot starts from something real
-  // rather than from defaults the user has never seen.
+/* How often you want to hear from it.
+
+   One control instead of six. Every knob under here trades the same thing:
+   how sure the app has to be before it says anything. Moving right means more
+   signals — and, unavoidably, a higher share of them wrong. There is no
+   setting that produces more signals of the same quality; if there were, it
+   would already be the default. */
+const RATES = {
+  strict:  { minScore: 7, minAgree: 3, cooldownBars: 12, maxAgeBars: 12,
+             minWinRate: 55, minRecord: 6, requireHtf: true, maxOpen: 15,
+             botsPerScan: 4, patMinHeight: 2.0, patMinSpan: 22,
+             note: "Only setups with several readings behind them and a winning "
+                 + "record on that coin. Expect a handful a day, sometimes none." },
+  normal:  { minScore: 6, minAgree: 2, cooldownBars: 8, maxAgeBars: 24,
+             minWinRate: 0, minRecord: 6, requireHtf: true, maxOpen: 20,
+             botsPerScan: 4, patMinHeight: 1.2, patMinSpan: 14,
+             note: "The middle. Trend has to agree, and two of the four reads "
+                 + "have to back the direction." },
+  often:   { minScore: 5, minAgree: 0, cooldownBars: 3, maxAgeBars: 48,
+             minWinRate: 0, minRecord: 6, requireHtf: false, maxOpen: 40,
+             botsPerScan: 6, patMinHeight: 0.9, patMinSpan: 10,
+             note: "Many more signals. The higher-timeframe check is off and "
+                 + "nothing has to agree, so a good number of these will be "
+                 + "wrong — read the record badge on each card before taking one." },
+  flood:   { minScore: 4, minAgree: 0, cooldownBars: 1, maxAgeBars: 96,
+             minWinRate: 0, minRecord: 6, requireHtf: false, maxOpen: 60,
+             botsPerScan: 10, patMinHeight: 0.6, patMinSpan: 8,
+             note: "Everything the strategies produce, filtered by almost "
+                 + "nothing. This is a research setting. Trading it as a signal "
+                 + "list is how an account gets fee'd to death." },
+};
+let RATE = "normal";
+function setRate(k) {
+  const r = RATES[k];
+  if (!r) return;
+  RATE = k;
+  for (const key in r) if (key !== "note") CFG[key] = r[key];
+  writeHash();
+  render(true);
+  refresh();
+}
+function rateBlock() {
+  const seg = [["strict","Selective"],["normal","Balanced"],
+               ["often","Frequent"],["flood","Everything"]].map(([k,l]) =>
+    `<button class="${k === RATE ? "on" : ""}" onclick="setRate('${k}')">${l}</button>`
+  ).join("");
+  return `<div class="seg">${seg}</div>
+    <div class="segnote">${RATES[RATE].note}</div>`;
+}
+
+/* The lineup.
+
+   Ten bots are only worth running if they are ten different opinions. Ten
+   copies of one setting is not a panel of experts, it is one expert shouting
+   — and it was exactly that which produced the repeated cards. So a new bot
+   takes the next unused lens rather than a copy of the screen: a different
+   strategy, a different chart period, or both.
+
+   Deliberately spread across speeds. A 15m bot and a 4h bot disagreeing is
+   information; two 1h bots disagreeing is mostly noise. */
+const BOT_LINEUP = [
+  { name: "Confluence fast",  cfg: { strategy: "confluence", signalTf: "15m", trendTf: "1h" } },
+  { name: "Patterns 1h",      cfg: { strategy: "pat",        signalTf: "1h",  trendTf: "4h" } },
+  { name: "UT Bot swing",     cfg: { strategy: "ut",         signalTf: "4h",  trendTf: "1d" } },
+  { name: "Open/Close 1h",    cfg: { strategy: "occ",        signalTf: "1h",  trendTf: "4h" } },
+  { name: "Target Trend 2h",  cfg: { strategy: "tt",         signalTf: "2h",  trendTf: "8h" } },
+  { name: "S&R zones",        cfg: { strategy: "sr",         signalTf: "1h",  trendTf: "4h" } },
+  { name: "Patterns swing",   cfg: { strategy: "pat",        signalTf: "4h",  trendTf: "1d" } },
+  { name: "Confluence slow",  cfg: { strategy: "confluence", signalTf: "4h",  trendTf: "1d" } },
+  { name: "UT Bot fast",      cfg: { strategy: "ut",         signalTf: "30m", trendTf: "2h" } },
+  { name: "Best per coin",    cfg: { strategy: "auto",       signalTf: "1h",  trendTf: "4h" } },
+];
+
+/** The first lens no bot is using yet. */
+function nextLens() {
+  const taken = new Set(BOTS.map((b) => (b.cfg && b.cfg.strategy) + "|"
+                                      + (b.cfg && b.cfg.signalTf)));
+  return BOT_LINEUP.find((l) => !taken.has(l.cfg.strategy + "|" + l.cfg.signalTf))
+      || BOT_LINEUP[BOTS.length % BOT_LINEUP.length];
+}
+
+function addBot(lens) {
+  if (BOTS.length >= BOT_MAX) { toast("Ten bots is the limit"); return; }
+  const pick = lens || nextLens();
   const b = newBot(BOTS.length + 1);
   b.on = true;
+  b.name = pick.name;
+  for (const k in pick.cfg) b.cfg[k] = pick.cfg[k];
+  if (ENGINE.on) b.startedAt = Date.now();
   BOTS.push(b);
   saveBots(); render(true);
+  return b;
+}
+
+/** One tap: fill every empty slot with a lens nobody is running. */
+function fillBots() {
+  let added = 0;
+  while (BOTS.length < BOT_MAX) { if (!addBot()) break; added++; }
+  toast(added ? "Added " + added + " bot" + (added === 1 ? "" : "s")
+              : "Every slot is already taken");
+  refresh();
 }
 
 function removeBot(id) {
@@ -2282,6 +2673,21 @@ function activeSetups() {
                           startedAt: b.startedAt }));
 }
 
+/* What each bot found on its last turn, so a staged rotation does not make
+   perfectly good signals blink out of the list. Keyed by signal and bot. */
+let HELD = new Map();
+let BOT_TURN = 0;
+
+/** The few bots that get a turn this scan. */
+function setupSlice(list) {
+  const n = Math.max(1, Math.min(CFG.botsPerScan || 4, list.length));
+  if (list.length <= n) return list;
+  const out = [];
+  for (let k = 0; k < n; k++) out.push(list[(BOT_TURN + k) % list.length]);
+  BOT_TURN = (BOT_TURN + n) % list.length;
+  return out;
+}
+
 /* --------------------------------------------------------------------- run */
 async function run() {
   if (BUSY) return;
@@ -2350,7 +2756,12 @@ async function run() {
   // first, fires — and every card says which setup produced it, because a
   // signal you cannot attribute is a signal you cannot judge.
   const all = [], near = [];
-  const passes = activeSetups();
+  // Ten bots is ten replays of every coin. Doing all of them in one scan is
+  // minutes of a locked phone, so each scan gives a few bots a turn and the
+  // rest keep the signals they found last time (see HELD, below). The whole
+  // lineup comes round every few scans instead of stalling on the first.
+  const lineup = activeSetups();
+  const passes = setupSlice(lineup);
   // Whatever happens inside a pass -- a throw from a render, a worker dying --
   // the settings must come out exactly as they went in. A scan that leaves
   // CFG holding one coin's strategy silently turns off per-coin selection for
@@ -2405,6 +2816,30 @@ async function run() {
     s.price = round(live, s.entry);
     s.roi = netRoi(((s.price-s.entry)/s.entry)*100*(s.side==="LONG"?1:-1)*s.leverage,
                    s.leverage);
+  }
+
+  // Carry forward what the bots that sat this scan out found on their last
+  // turn. Without this, staging would make signals blink in and out as the
+  // rotation came round — the list would look broken and, worse, a signal
+  // that is still perfectly valid would disappear for no reason the reader
+  // can see. Freshness and the resolve check still govern how long they last.
+  {
+    const ran = new Set(passes.map((p) => p.id));
+    const live = new Set(lineup.map((p) => p.id));
+    const carried = [];
+    for (const [k, held] of HELD) {
+      // A bot that just ran has said everything it has to say; drop its old
+      // entries so a signal it no longer finds cannot linger.
+      if (ran.has(held.setup) || !live.has(held.setup)) { HELD.delete(k); continue; }
+      carried.push(held);
+    }
+    for (const s of all) HELD.set(sigKey(s) + "|" + (s.setup || "live"), s);
+    all.push(...carried);
+    // A hard cap, so a long session cannot grow this without limit.
+    if (HELD.size > 900) {
+      const keys = [...HELD.keys()].slice(0, HELD.size - 900);
+      for (const k of keys) HELD.delete(k);
+    }
   }
 
   all.sort((a,b)=>b.at-a.at);
@@ -3086,6 +3521,39 @@ function signalText(s) {
   return L.join("\n");
 }
 
+/* The batch that just fired, as one block — the way a channel posts it.
+   Several signals arriving together is normal and reads better as one message
+   than as a scroll of separate cards you have to piece together yourself. */
+function digestBlock() {
+  if (!LASTBATCH || !LASTBATCH.list.length) return "";
+  const still = LASTBATCH.list.filter((s) => OPEN.includes(s) && !entryGone(s));
+  if (!still.length) return "";
+  const rows = still.map((s) => `<div class="kv">
+      <span class="k"><b class="${s.side === "LONG" ? "up" : "down"}">${s.side}</b>
+        ${esc(s.symbol.replace("USDT", ""))}
+        <span style="color:#5e5e66">· ${esc(s.tag)}</span></span>
+      <span class="v">${s.entry} → SL ${s.stop}</span></div>`).join("");
+  return `<div class="card" style="margin-bottom:10px;border-color:#2b6b45">
+    <div class="kv" style="border:0;padding-top:0">
+      <span class="k" style="font-weight:800;font-size:14px">
+        ${still.length} new signal${still.length === 1 ? "" : "s"}</span>
+      <span class="v">${age(LASTBATCH.at)}</span>
+    </div>
+    ${rows}
+    <button class="btn" style="margin-top:9px"
+      onclick="copyOut(batchText(),'${still.length} signals')">Copy all
+      ${still.length} as one message</button>
+  </div>`;
+}
+
+/** The batch as a single message, ready to paste into a channel. */
+function batchText() {
+  if (!LASTBATCH) return allSignalsText();
+  const still = LASTBATCH.list.filter((s) => OPEN.includes(s) && !entryGone(s));
+  if (!still.length) return allSignalsText();
+  return still.map(signalText).join("\n\n———\n\n");
+}
+
 /** Every takeable signal in one message. */
 function allSignalsText() {
   const list = OPEN.filter((x) => !x.belowBar && !entryGone(x));
@@ -3475,7 +3943,7 @@ function kpiBlock() {
 function resultsView() {
   // The backtester is a manual instrument. In Automatic the search is already
   // doing that job, and a second set of the same knobs is the confusion.
-  const rseg = MODE === "auto" ? "" :
+  const rseg =
     [["live","Scan window"],["bt","Backtest"]].map(([k,l])=>
       `<button class="${k===RTAB?"on":""}" onclick="setRtab('${k}')">${l}</button>`
       ).join("");
@@ -3539,6 +4007,7 @@ function profileView() {
       ${k[0].toUpperCase()+k.slice(1)}</button>`).join("");
   const stratSeg = [["confluence","Confluence"],["occ","Open/Close"],
                     ["sr","S&R"],["ut","UT Bot"],["tt","Target Trend"],
+                    ["pat","Chart patterns"],
                     ["auto","Auto per pair"]].map(([k,l])=>
     `<button class="chip${k===CFG.strategy?" on":""}"
       onclick="setStrategy('${k}')">${l}</button>`).join("");
@@ -3656,6 +4125,12 @@ function profileView() {
       : CFG.strategy === "tt"
       ? "Target Trend — trend flips on a close through a band around SMA(high) "
         + "and SMA(low); the opposite band trails as the stop."
+      : CFG.strategy === "pat"
+      ? "Chart patterns — wedges, flags, pennants, triangles, rectangles, "
+        + "double tops and bottoms, head and shoulders, cup and handle. Built "
+        + "from confirmed swing pivots only, and never a signal until the shape "
+        + "actually breaks. Each one carries its own measured target and a stop "
+        + "on the far side of the shape."
       : "Eight indicators scored together. A signal needs most of them to agree."
       }</div>
     <h2>Per-pair strategy</h2>
@@ -4033,7 +4508,9 @@ const EXPORT_KEYS = [
   "pairs","pairMode","pickBy","sideBias","custom","focus","maxOpen","minShow","maxAgeBars",
   "alwaysOn","notify","sound","autoRefreshMin","sinceDeploy","dualScan",
   "onConflict",
-  "minWinRate","minRecord","liveOnly",
+  "minWinRate","minRecord","liveOnly","botsPerScan","botBtPairs","botBtBars",
+  "patPivot","patTol","patFlat","patMaxAge","patCooldown","patMinHeight","patMinSpan",
+  "patFlagRun","patFlagPause","patFlagAtr","patCupBars","patTargets",
 ];
 
 function exportConfig() {
@@ -4229,7 +4706,7 @@ async function deployNow(silent) {
       // the old strategy's record next to it would mix two things that are
       // not comparable, so the tracked record starts again here.
       if (DEPLOY.freshStart) {
-        ARCHIVE.clear(); CLOSED = []; FEED = [];
+        ARCHIVE.clear(); HELD.clear(); CLOSED = []; FEED = [];
         SESSION.startedAt = Date.now(); SESSION.scans = 0;
         saveSession();
         deployLog("record cleared — measuring " + win.label + " from now");
@@ -4498,7 +4975,9 @@ function autoPanel() {
     `<button class="${k === CFG.market ? "on" : ""}"
       onclick="setMarket('${k}')">${l}</button>`).join("");
 
-  return `<h2>Which coins</h2>
+  return `<h2>How often you want signals</h2>
+    ${rateBlock()}
+    <h2>Which coins</h2>
     <div class="seg">${modeSeg}</div>
     ${CFG.pairMode === "custom" ? pickerBlock()
       : CFG.pickBy === "movement"
@@ -4515,10 +4994,6 @@ function autoPanel() {
       : "Futures — long and short, with leverage sized so a stop costs "
         + CFG.maxLossPct + "% of the margin, capped at " + CFG.maxLev + "×."}</div>
     ${deployCard()}
-    <h2>Bots</h2>
-    ${botsBlock()}
-    <h2>Keep it running</h2>
-    ${liveBlock()}
     <h2>Bots</h2>
     ${botsBlock()}
     <h2>Keep it running</h2>
@@ -4606,6 +5081,7 @@ function releaseWake() {
 /* Announces three things: a new setup you can take, a target reached, and a
    stop hit. The last one matters most — it is the one you would otherwise
    find out about by opening the app and discovering the money already gone. */
+let LASTBATCH = null;
 function alertScan(all) {
   const shout = (title, body, kind, key) => {
     if (!CFG.notify) return;
@@ -4656,6 +5132,7 @@ function alertScan(all) {
     WATCHDOG.notified = new Set([...WATCHDOG.notified].slice(-200));
   }
   WATCHDOG.seeded = true;
+  if (fired.length) LASTBATCH = { at: Date.now(), list: fired.slice(0, 20) };
   if (!fired.length) return;
   const one = fired[0];
   shout(fired.length === 1
@@ -4795,13 +5272,22 @@ function botsBlock() {
       ${kv("Chart period", tfWords(cfg.signalTf + ">" + cfg.trendTf))}
       ${kv("Stop / leverage cap", cfg.slAtr + "× ATR · " + cfg.maxLev + "x")}
       ${kv("Running since", b.startedAt ? age(b.startedAt) : "not started")}
-      ${kv("Its record", st.n ? st.n + " trades · TP1 " + st.rate + "% · "
+      ${kv("Live record", st.n ? st.n + " trades · TP1 " + st.rate + "% · "
            + (st.exp > 0 ? "+" : "") + st.exp + "R" : "nothing finished yet")}
+      ${kv("Its own backtest", b.btBusy ? "replaying…"
+        : !b.bt ? "not run yet"
+        : b.bt.err ? esc(b.bt.err)
+        : b.bt.n < 10
+          ? b.bt.n + " trades — too few to mean anything"
+          : `<span class="${b.bt.netPct > 0 ? "up" : "down"}">${
+              b.bt.netPct > 0 ? "+" : ""}${b.bt.netPct}%</span> · ${b.bt.n} trades
+             · ${b.bt.rate}% won · ${b.bt.maxDD}% worst drop`)}
       ${b.mode === "auto" ? kv("Won its last search",
           b.winner ? esc(b.winner) + " on " + tfWords(b.tf) : "not searched yet") : ""}
       <div class="pickbar" style="margin-top:9px">
         <button onclick="botEdit('${b.id}')">Edit</button>
         <button onclick="botTakeCurrent('${b.id}')">Take current</button>
+        <button onclick="botBacktest('${b.id}')">Backtest it</button>
         ${b.mode === "auto" ? `<button class="go"
           onclick="botSearch('${b.id}')">Search now</button>` : ""}
         <button onclick="removeBot('${b.id}')">Remove</button>
@@ -4822,10 +5308,96 @@ function botsBlock() {
         searching. Nothing runs when it is off.</div>
     </div>
     ${cards}
-    ${BOTS.length < BOT_MAX ? `<button class="btn" onclick="addBot()">Add a bot
-      (${BOTS.length} of ${BOT_MAX})</button>` : ""}
+    ${BOTS.length < BOT_MAX ? `<div class="pickbar" style="margin-top:4px">
+      <button onclick="addBot()">Add a bot (${BOTS.length} of ${BOT_MAX})</button>
+      <button class="go" onclick="fillBots()">Fill the lineup</button></div>
+      <div class="hint">Each new bot takes a lens nobody is running yet — a
+        different strategy, a different chart period, or both. Ten copies of
+        one setting is one opinion repeated, not ten opinions.</div>` : ""}
+    <div class="pickbar" style="margin-top:4px">
+      <button class="go" onclick="botBacktestAll()">Backtest every bot</button>
+    </div>
+    <div class="hint">A backtest is what these rules would have done on candles
+      that already happened, over ${CFG.botBtPairs} pairs. It is evidence, not a
+      forecast — a bot can win a backtest and lose live, which is why the
+      leaderboard still ranks on the live column.</div>
+    <h2>Turn-taking</h2>
+    <div class="status">
+      <div class="kv"><span class="k">Bots per scan</span><span class="v">
+        <input type="range" min="1" max="${BOT_MAX}" step="1"
+          value="${CFG.botsPerScan}" oninput="setv('botsPerScan',this.value,'')">
+        <span id="v_botsPerScan">${CFG.botsPerScan}</span></span></div>
+    </div>
+    <div class="hint">${on <= CFG.botsPerScan
+      ? "Every bot gets a turn on every scan."
+      : "Each scan gives " + CFG.botsPerScan + " bots a turn and the rest keep "
+        + "what they found last time, so the whole lineup comes round every "
+        + Math.ceil(on / CFG.botsPerScan) + " scans. Ten bots all replaying "
+        + "every coin at once is minutes of a locked phone."}</div>
     <h2>Leaderboard</h2>
     ${leaderboard()}`;
+}
+
+/* Each bot's own backtest.
+
+   The leaderboard ranks bots on their live record, which is the only thing
+   that cannot be fooled — but a bot you switched on this morning has no live
+   record, and waiting a month to find out it was never any good is a bad
+   trade. So each bot can replay its own settings over deep history and carry
+   the answer on its card.
+
+   It is labelled as a backtest everywhere it appears, because that is what it
+   is: what these rules would have done on candles that already happened. It
+   is evidence, not a forecast, and the live column is what settles it. */
+async function botBacktest(id) {
+  const b = botById(id);
+  if (!b || BT.running || BEST.running || OPT.running || DEPLOY.working) return;
+  const cfg = b.follow ? snapshotSetup() : b.cfg;
+  b.btBusy = true; render(true);
+  const undo = applySetup(cfg);
+  const syms = (UNIVERSE.length ? UNIVERSE : CFG.focus).slice(0, CFG.botBtPairs);
+  try {
+    const data = new Map();
+    const queue = syms.slice();
+    const worker = async () => {
+      while (queue.length) {
+        const sym = queue.shift();
+        try {
+          const [ltf, htf] = await Promise.all([
+            btKlines(sym, cfg.signalTf, CFG.botBtBars),
+            btKlines(sym, cfg.trendTf, Math.min(1000, CFG.botBtBars)),
+          ]);
+          data.set(sym, { ltf, h: enrich(htf) });
+        } catch (e) { /* a pair that will not load is simply not tested */ }
+        await new Promise((r) => setTimeout(r, 0));
+      }
+    };
+    await Promise.all(Array.from({ length: 4 }, worker));
+    if (!data.size) { b.bt = { err: "no candle data" }; return; }
+
+    const cands = [];
+    for (const [sym, v] of data) {
+      const { d, out } = btCandidates(sym, v.ltf, v.h);
+      for (const sig of out) cands.push({ sig, path: btPath(sig, d) });
+      await new Promise((r) => setTimeout(r, 0));
+    }
+    const res = btSimulate(cands, cfg.signalTf);
+    b.bt = {
+      at: Date.now(), pairs: data.size, bars: CFG.botBtBars,
+      n: res.n, netPct: res.netPct, rate: res.winRate,
+      maxDD: res.maxDD, pf: res.pf,
+    };
+  } catch (e) {
+    b.bt = { err: e.message || String(e) };
+  } finally {
+    undo(); b.btBusy = false; saveBots(); render(true);
+  }
+}
+
+/** Backtest every enabled bot, one after another. */
+async function botBacktestAll() {
+  for (const b of enabledBots()) await botBacktest(b.id);
+  toast("Backtested " + enabledBots().length + " bots");
 }
 
 /** Run the full search for one bot and keep the result on that bot. */
@@ -4935,7 +5507,7 @@ function deployCard() {
     ${speedTuneBlock()}`;
 
   return `<div class="card" style="margin-bottom:6px">
-    ${MODE === "manual" ? `<div class="stepno">Step 2</div>` : ""}
+    <div class="stepno">Step 2</div>
     <div style="font-size:16px;font-weight:800;margin-bottom:3px">Deploy</div>
     <div style="color:var(--dim);font-size:12px;line-height:1.5;margin-bottom:11px">
       ${DEPLOY.on
@@ -5133,6 +5705,7 @@ function render(force) {
           — one is long, the other short. Taking both is paying two spreads to
           hold no position; taking one is picking a side the app cannot pick
           for you.</div>` : "")
+      + digestBlock()
       + (pass.length ? pass.map(card).join("")
         + `<button class="btn" onclick="copyOut(allSignalsText(),'${
             pass.length} signals')">Copy all ${pass.length} as text</button>`
@@ -5159,10 +5732,9 @@ function render(force) {
   else if (TAB==="closed") { $("#title").textContent="Results"; body=resultsView(); }
   else {
     $("#title").textContent = "Settings";
-    body = modeCard() + (MODE === "auto"
-      ? autoPanel()
-      : accordion(profileView()) + quickSetup()
-        + "<h2>Export this setup</h2>" + exportBlock());
+    body = autoPanel()
+         + accordion(profileView()) + quickSetup()
+         + "<h2>Export this setup</h2>" + exportBlock();
   }
   // Rebuilding the whole view is the single most expensive thing this app
   // does. During a scan render() is called every few coins, and on the Signals
@@ -5230,11 +5802,13 @@ const BT = {
 const BTCACHE = new Map();
 const BT_STRATS = {occ:"Open/Close Cross", confluence:"Confluence",
                    sr:"Support & Resistance", ut:"UT Bot",
-                   tt:"Target Trend"};
+                   tt:"Target Trend", pat:"Chart patterns"};
 const BT_KEYS = ["strategy","signalTf","trendTf","requireHtf","minScore",
   "occMaType","occMaLen","occMult","occExitOnCross",
   "srPivot","srZoneAtr","srMinTouch","srMaxAge","srMode","srZoneStop","srBreakAtr",
-  "utKey","utAtrLen","ttLen","ttTarget"];
+  "utKey","utAtrLen","ttLen","ttTarget",
+  "patPivot","patTol","patFlat","patMaxAge","patCooldown","patMinHeight","patMinSpan",
+  "patFlagRun","patFlagPause","patFlagAtr","patCupBars","patTargets"];
 
 /* The strategy functions read CFG, so a run swaps the backtest's settings in,
    does all of its work synchronously, then puts CFG back. Nothing async
@@ -5309,6 +5883,13 @@ function btCandidates(sym, ltf, h) {
   } else if (CFG.strategy === "sr") {
     for (const hit of srScan(d)) {
       const sig = srSignal(sym, d, hit);
+      if (!sig) continue;
+      if (CFG.requireHtf && htfBias(h, d.c[hit.idx].t) !== sig.side) continue;
+      out.push(sig);
+    }
+  } else if (CFG.strategy === "pat") {
+    for (const hit of patScan(d)) {
+      const sig = patSignal(sym, d, hit);
       if (!sig) continue;
       if (CFG.requireHtf && htfBias(h, d.c[hit.idx].t) !== sig.side) continue;
       out.push(sig);
@@ -5511,7 +6092,7 @@ async function runBacktest() {
 
   // ---- 2. replay each strategy over that data
   const list = BT.strategy === "all"
-    ? ["occ","sr","confluence","ut","tt"] : [BT.strategy];
+    ? ["occ","sr","confluence","ut","tt","pat"] : [BT.strategy];
   for (let k = 0; k < list.length; k++) {
     const strat = list[k];
     BT.note = "Replaying " + BT_STRATS[strat] + "…";
@@ -5537,6 +6118,8 @@ async function runBacktest() {
         ? `${BT.srMode === "both" ? "bounces + breakouts"
             : BT.srMode === "bounce" ? "bounces only" : "breakouts only"} · `
           + `${BT.srMinTouch}+ touches`
+        : strat === "pat"
+        ? `shapes ${BT.patMinSpan}+ bars wide, ${BT.patMinHeight}× ATR tall`
         : `${BT.minScore}/8 confluence`;
       BT.runs.push({key:strat, res});
     } catch (e) { BT.err = e.message || String(e); }
@@ -5726,6 +6309,18 @@ function optSpace(strategy) {
       srBreakAtr: [0.1, 0.2, 0.25, 0.4, 0.6],
     };
   }
+  if (strategy === "pat") {
+    return {
+      ...common,
+      patPivot: [2, 3, 4, 6, 8],
+      patTol: [1.0, 1.75, 2.5, 4.0],
+      patFlat: [0.5, 1.2, 2.0],
+      patMinHeight: [0.8, 1.2, 2.0, 3.0],
+      patMinSpan: [8, 14, 22, 35],
+      patMaxAge: [80, 140, 220],
+      patFlagAtr: [2, 3, 4.5],
+    };
+  }
   return { ...common, minScore: [4, 5, 6, 7, 8], adxMin: [10, 15, 20, 25, 30],
            volMult: [1.0, 1.15, 1.3] };
 }
@@ -5772,6 +6367,13 @@ function optCandidates(sym, ltf, d, h) {
   } else if (CFG.strategy === "sr") {
     for (const hit of srScan(d)) {
       const sig = srSignal(sym, d, hit);
+      if (!sig) continue;
+      if (CFG.requireHtf && htfBias(h, d.c[hit.idx].t) !== sig.side) continue;
+      out.push(sig);
+    }
+  } else if (CFG.strategy === "pat") {
+    for (const hit of patScan(d)) {
+      const sig = patSignal(sym, d, hit);
       if (!sig) continue;
       if (CFG.requireHtf && htfBias(h, d.c[hit.idx].t) !== sig.side) continue;
       out.push(sig);
@@ -6684,7 +7286,7 @@ function backtestView() {
      <button class="sw${val?" on":""}" onclick="togBt('${k}',this)"></button></div>`;
 
   const stratSeg = [["occ","Open/Close"],["sr","S&R"],["confluence","Confluence"],
-                    ["ut","UT Bot"],["tt","Target Trend"],
+                    ["ut","UT Bot"],["tt","Target Trend"],["pat","Chart patterns"],
                     ["all","Compare all"]].map(([k,l])=>
     `<button class="chip${k===BT.strategy?" on":""}"
       onclick="setBtStrategy('${k}')">${l}</button>`).join("");
@@ -7804,7 +8406,6 @@ let chRz; window.addEventListener("resize", ()=>{
 
 /* ------------------------------------------------------------------- start */
 readHash();
-loadMode();
 loadBots();
 loadSession();
 loadDeploy();
