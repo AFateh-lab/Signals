@@ -2416,6 +2416,35 @@ async function run() {
   // target is not a trade you can take now — its entry price is history. The
   // window is counted in candles, so it means the same thing on 5m as on 1d.
   const fresh = staleCut();
+
+  // The same signal found by several bots is one signal.
+  //
+  // This has to happen before anything counts them. Four bots on the same
+  // settings find the same trade four times, and left alone that would
+  // quadruple the coin's track record, the results list, and the number of
+  // times the alert sounds — every number in the app inflated by however many
+  // bots happen to be switched on. Collapse identical finds here, once, and
+  // remember which bots found each one.
+  {
+    const one = new Map();
+    const uniq = [];
+    for (const s of all) {
+      const k = s.symbol + "|" + s.at + "|" + s.side + "|" + s.entry;
+      const first = one.get(k);
+      if (first) {
+        if (s.setupName && !first.by.includes(s.setupName)) first.by.push(s.setupName);
+        // The earliest bot's clock owns it. Otherwise a bot switched on five
+        // minutes ago could make an hour-old signal look brand new.
+        if (s.botStart && (!first.botStart || s.botStart < first.botStart))
+          first.botStart = s.botStart;
+        continue;
+      }
+      s.by = s.setupName ? [s.setupName] : [];
+      one.set(k, s); uniq.push(s);
+    }
+    all.length = 0; all.push(...uniq);
+  }
+
   buildRecord(all);
   OPEN = [];
   const seen = new Set();
@@ -2450,11 +2479,43 @@ async function run() {
       SPARE.push(s);
       continue;
     }
-    // Keyed by setup as well as symbol: the same coin can legitimately fire
-    // on both setups, and collapsing them would hide that they agreed.
+    // Within one setup, only the newest setup on a coin is takeable; the
+    // older ones are history. Keyed by setup because two setups looking at
+    // the same coin is a separate matter, handled just below.
     const key = s.symbol + "|" + (s.setup || "live");
     if (seen.has(key)) { DROP.dup++; continue; }
     seen.add(key); s.focus = CFG.focus.includes(s.symbol); OPEN.push(s);
+  }
+
+  // One coin, one direction, one card.
+  //
+  // Four bots running the same settings all find the same setup. That is four
+  // bots agreeing about one trade, not four trades — and printing it four
+  // times tells you the scan found more than it did, which is the worst kind
+  // of error this app can make. Collapse them into the newest card and name
+  // the bots on it, so agreement reads as agreement.
+  //
+  // Opposite sides are deliberately left alone: that is a real disagreement,
+  // and the conflict rules below decide what to do about it.
+  {
+    const byDir = new Map();
+    const merged = [];
+    for (const s of OPEN) {
+      if (!s.by) s.by = s.setupName ? [s.setupName] : [];
+      const k = s.symbol + "|" + s.side;
+      const first = byDir.get(k);
+      if (first) {
+        DROP.dup++;
+        for (const n of s.by) if (!first.by.includes(n)) first.by.push(n);
+        // The earliest bot's clock owns the card. Otherwise a bot started
+        // five minutes ago could make an hour-old signal look new.
+        if (s.botStart && (!first.botStart || s.botStart < first.botStart))
+          first.botStart = s.botStart;
+        continue;
+      }
+      byDir.set(k, s); merged.push(s);
+    }
+    OPEN = merged;
   }
   if (CFG.focusFirst) {
     const rank = s => {
@@ -2941,6 +3002,20 @@ function pill(s) {
   return '<span class="pill prog">In progress</span>';
 }
 
+/* Which bot found it — and, when several found the same thing, that they
+   agreed. Silent when only one setup is running, because "Main" on every card
+   is noise, and noise is what stops people reading the badges that matter. */
+function botBadge(s) {
+  const by = (s.by && s.by.length) ? s.by
+    : (s.setupName && s.setupName !== "Current settings" ? [s.setupName] : []);
+  if (!by.length) return "";
+  const many = by.length > 1;
+  if (!many && enabledBots().length <= 1) return "";
+  return `<span class="b" style="background:${many ? "#14432c" : "#1d3a5c"};color:${
+    many ? "#8ff0c0" : "#9ad2ff"}">${
+    many ? by.length + " bots agree · " : ""}${esc(by.join(", "))}</span>`;
+}
+
 /* The coin's own track record with this strategy, on the card. A number you
    can argue with beats a claim you cannot check. */
 function recBadge(s) {
@@ -3035,8 +3110,7 @@ function card(s, i) {
       <span class="b meta">${s.stf || CFG.signalTf} &middot; ${s.tag || (s.score+"/8")}</span>
       ${s.belowBar ? `<span class="b" style="background:#3a2f16;color:#f0c14b"
         >below filter · ${esc(s.belowBar)}</span>` : ""}
-      ${s.setup === "mine" ? `<span class="b" style="background:#1d3a5c;color:#9ad2ff"
-        >my setup</span>` : ""}
+      ${botBadge(s)}
       ${s.mae ? `<span class="b" style="background:var(--sunk);color:#9b9ba3"
         >${s.mae}R against${s.mfe ? " · " + s.mfe + "R for" : ""}</span>` : ""}
       ${s.keptOver ? `<span class="b" style="background:#1f3d2a;color:#8ff0c0"
@@ -3233,8 +3307,8 @@ function emptySignals() {
     ${staleLabel()} ago — too old to enter at that price now`);
   if (DROP.weak) bits.push(`<b>${DROP.weak}</b> are on coins where this strategy
     has not reached its first target ${CFG.minWinRate}% of the time lately`);
-  if (DROP.dup) bits.push(`<b>${DROP.dup}</b> were older signals on a pair that
-    already had a newer one`);
+  if (DROP.dup) bits.push(`<b>${DROP.dup}</b> repeated a pair another bot had
+    already found, or were older signals on a pair with a newer one`);
 
   const why = bits.length
     ? `The scan found <b>${DROP.total}</b> unresolved setups across
