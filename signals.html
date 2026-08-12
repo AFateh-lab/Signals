@@ -5312,16 +5312,22 @@ function bookMerge(passed, live) {
   // statement: you are saying you do not trade it at all. Keeping DOGE on
   // screen after you deleted DOGE is not honesty, it is clutter — and it is
   // what makes the list look like it ignores you.
+  let mineOnly = null;
   if (CFG.pairMode === "custom") {
-    const mine = new Set(mineList());
+    mineOnly = new Set(mineList());
     let dropped = 0;
     for (const [k, s] of BOOK) {
-      if (!mine.has(s.symbol)) { BOOK.delete(k); dropped++; }
+      if (!mineOnly.has(s.symbol)) { BOOK.delete(k); dropped++; }
     }
     if (dropped) saveBook();
   }
 
   for (const s of passed) {
+    // The purge above is not enough on its own. If anything upstream ever
+    // hands us an off-list coin again, publishing it here would put it
+    // straight back after the sweep — cleared and re-added in the same pass,
+    // which is exactly how this looked from the outside.
+    if (mineOnly && !mineOnly.has(s.symbol)) continue;
     const k = sigKey(s);
     if (!BOOK.has(k)) {
       // A copy, not the object itself. HELD and `all` hold references to the
@@ -5401,7 +5407,18 @@ async function run() {
       }
       // Always computed - the Market tiles use it whichever pair mode is on.
       const focus = CFG.focus.filter(s=>bySym[s]);
-      if (CFG.pairMode !== "custom" || !CFG.custom.length) {
+      // The condition used to be `pairMode !== "custom" || !CFG.custom.length`,
+      // and that second half was the bug behind every "why am I seeing a coin
+      // I did not pick".
+      //
+      // It is a leftover from when there were two coin lists. Your coins now
+      // live in CFG.focus and CFG.custom stays empty — so `!CFG.custom.length`
+      // was always true, and this block overwrote the list built two lines
+      // above with focus-plus-the-top-hundred. "Only my coins" was on, the
+      // screen said so, the book filter and the server filter both honoured
+      // it — and underneath, the scanner was still reading a hundred pairs
+      // and publishing whatever they produced.
+      if (CFG.pairMode !== "custom") {
         // Focus coins first and always present, then fill up with the biggest
         // remaining pairs by 24h turnover.
         let rest;
