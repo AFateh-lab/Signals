@@ -3571,7 +3571,18 @@ function matrixView() {
   const sym = list.includes(MATRIX.view) ? MATRIX.view : list[0];
   const best = matrixBest(10);
 
-  const head = `<div class="card" style="margin-bottom:12px">
+  const head = `${CFG.viewer ? `<div class="card" style="margin-bottom:12px;
+      border-color:#5c3a17">
+    <div class="kv" style="border:0;padding-top:0">
+      <span class="k" style="font-weight:800">This runs on your device</span>
+      <span class="v" style="color:var(--gold)">research only</span></div>
+    <div class="hint" style="margin-bottom:0">The server publishes your
+      signals; this table does not feed into them. It replays every strategy
+      on every chart period to show you which combinations hold up, and it
+      downloads candles and uses this machine's processor to do it — the one
+      thing left that does. Nothing breaks if you never run it.</div></div>`
+    : ""}
+    <div class="card" style="margin-bottom:12px">
     <div class="kv" style="border:0;padding-top:0">
       <span class="k" style="font-weight:800;font-size:15px">100 bots</span>
       <span class="v">${MATRIX_STRATS.length} strategies ×
@@ -3581,6 +3592,8 @@ function matrixView() {
     ${kv("Cells that cleared the wall", passing + " of " + MATRIX.cell.size)}
     ${kv("Full passes", MATRIX.pass + (MATRIX.at ? " · last " + age(MATRIX.at) : ""))}
     ${MATRIX.running ? kv("Working on", esc(MATRIX.step || "…")) : ""}
+    ${rngRaw("matrixCoins", "Coins to score per pass", CFG.matrixCoins,
+             1, 25, 1, "")}
     <div class="kv"><span class="k">Keep scoring in the background</span>
       <button class="sw${CFG.matrixAuto ? " on" : ""}"
         onclick="CFG.matrixAuto=!CFG.matrixAuto;writeHash();render(true)"></button></div>
@@ -8108,7 +8121,7 @@ const rngRaw = (k, label, val, min, max, step, suf) =>
    for a heading that had moved. A page cannot tell you it is stale, so it
    should at least tell you what it is. Read this out and it settles the
    question in one look. */
-const BUILD = "B20 · 2026-08-12 · viewer coin list + status";
+const BUILD = "B21 · 2026-08-12 · matrix batch is yours to set";
 
 function buildStamp() {
   return `<div class="hint" style="margin-top:18px;text-align:center;
