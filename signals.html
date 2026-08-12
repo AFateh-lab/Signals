@@ -7981,6 +7981,19 @@ const rngRaw = (k, label, val, min, max, step, suf) =>
     oninput="setv('${k}',this.value,'${suf || ""}')">
    <span id="v_${k}">${val || "off"}${val ? (suf || "") : ""}</span></span></div>`;
 
+/* Which copy of this file is actually running.
+
+   Several rounds of "did the upload work?" were spent comparing screenshots
+   for a heading that had moved. A page cannot tell you it is stale, so it
+   should at least tell you what it is. Read this out and it settles the
+   question in one look. */
+const BUILD = "B14 · 2026-08-12 · add any coin";
+
+function buildStamp() {
+  return `<div class="hint" style="margin-top:18px;text-align:center;
+    color:#4d5763">Build <b>${BUILD}</b></div>`;
+}
+
 function runningNow() {
   const on = enabledBots();
   const names = on.map((b) => b.name).join(", ");
@@ -8594,11 +8607,22 @@ function focusBlock() {
       below. The star on any signal card adds that coin here too.</div>
     <div class="chips">${chips || '<span class="hint">None yet — add some '
       + 'below.</span>'}</div>
-    <input class="search" id="fq" placeholder="Add a coin — type its name…"
+    ${/* Enter adds whatever you typed, listed or not. The list is yours; the
+          app's job is to tell you what it can and cannot scan, not to refuse
+          the entry. */""}
+    <input class="search" id="fq" placeholder="Type any coin, then press Enter…"
       value="${esc(FOCUSQ)}" oninput="focusFilter(this.value)"
+      onkeydown="if(event.key==='Enter'){event.preventDefault();addTyped()}"
       autocapitalize="characters" autocomplete="off" spellcheck="false">
-    <div class="chips">${add || '<span class="hint">Waiting for the coin list…'
-      + '</span>'}</div>
+    <div class="hint" style="margin:-2px 0 6px">Any coin you type is added when
+      you press <b>Enter</b> — whether or not it appears below. Ones no
+      exchange lists are kept on your list and simply produce nothing until
+      one carries them.</div>
+    ${/* An id, because "the last .chips on the page" stopped being this one
+          the moment a sector row was added below it — and the search box
+          quietly filtered the wrong element instead of erroring. */""}
+    <div class="chips" id="fpool">${add || '<span class="hint">Waiting for the '
+      + 'coin list…</span>'}</div>
     <div class="segnote" style="margin-top:10px">Or add a whole sector:</div>
     <div class="chips">${sectors}</div>
     <div class="pickbar" style="margin-top:6px">
@@ -8651,20 +8675,55 @@ function addSector(name) {
 }
 
 let FOCUSQ = "";
+
+/* Add exactly what was typed. Tolerant about how you write it — btc, BTC,
+   BTC/USDT and BTCUSDT all mean the same coin, and a list that rejects your
+   input because of punctuation is a list you stop maintaining. */
+function addTyped() {
+  const box = document.getElementById("fq");
+  const raw = ((box && box.value) || FOCUSQ || "").trim().toUpperCase()
+    .replace(/[^A-Z0-9]/g, "");
+  if (!raw) return;
+  const sym = raw.endsWith("USDT") ? raw : raw + "USDT";
+  if (mineList().includes(sym)) {
+    toast(sym.replace("USDT", "") + " is already on your list");
+    return;
+  }
+  const known = ALLSYMS.includes(sym);
+  focusOn(sym);
+  if (!known) toast(sym.replace("USDT", "") + " added — not listed yet, so it "
+    + "will stay quiet until an exchange carries it");
+}
+
 function focusFilter(q) {
   FOCUSQ = q;
   const up = q.trim().toUpperCase();
   // Filter in place rather than re-rendering the whole screen: a redraw on
   // every keystroke loses the keyboard focus, which makes typing impossible.
+  const mine = mineList();
   const pool = (ALLSYMS.length ? ALLSYMS : [])
-    .filter((x) => !CFG.focus.includes(x) && (!up || x.includes(up)))
+    .filter((x) => !mine.includes(x) && (!up || x.includes(up)))
     .slice(0, 40);
-  const box = document.querySelectorAll(".chips");
-  const target = box[box.length - 1];
+  const target = document.getElementById("fpool");
   if (!target) return;
-  target.innerHTML = pool.map((sym) => `<button class="chip"
-    onclick="focusOn('${esc(sym)}')">${esc(sym.replace("USDT", ""))}</button>`)
-    .join("") || '<span class="hint">No coin matches.</span>';
+  if (pool.length) {
+    target.innerHTML = pool.map((sym) => `<button class="chip"
+      onclick="focusOn('${esc(sym)}')">${esc(sym.replace("USDT", ""))}</button>`)
+      .join("");
+    return;
+  }
+  // Nothing matched. That usually means the coin is not on the exchange the
+  // app reads — but the list is yours, and refusing to add something because
+  // the venue of the day has not listed it is the app deciding for you. Offer
+  // it anyway, and say plainly what will happen.
+  const guess = up.endsWith("USDT") ? up : up + "USDT";
+  target.innerHTML = up
+    ? `<button class="chip" onclick="focusOn('${esc(guess)}')">
+         Add ${esc(up)} anyway</button>
+       <span class="hint" style="display:block;margin-top:6px">No listed pair
+         matches “${esc(up)}”. You can still add it — it will simply produce
+         nothing until an exchange the app can reach carries it.</span>`
+    : '<span class="hint">No coin matches.</span>';
 }
 
 const MAJORS = ["BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT","ADAUSDT",
@@ -8925,7 +8984,8 @@ function render(force) {
     body = autoPanel()
          + "<h2>Everything else</h2>"
          + accordion(profileView())
-         + "<h2>Export this setup</h2>" + exportBlock();
+         + "<h2>Export this setup</h2>" + exportBlock()
+         + buildStamp();
   }
   // Rebuilding the whole view is the single most expensive thing this app
   // does. During a scan render() is called every few coins, and on the Signals
