@@ -5131,6 +5131,8 @@ function serverBlock() {
     ${kv("Coins covered", (j.universe || 0) + " · "
       + (j.runs || 0) + " runs so far")}
     ${kv("Its coin list", esc(j.coin_source || "top by turnover"))}
+    ${j.timeframes ? kv("Timeframes it sweeps", esc(j.timeframes.join("  ·  ")))
+      : ""}
     ${kv("Strategies it runs", (j.strategies || []).join(", "))}
     ${CFG.pairMode === "custom" ? `<div class="hint" style="margin-bottom:0">
       You are on <b>Only my coins</b>, so anything the server found outside
@@ -7984,12 +7986,21 @@ function autoPanel() {
   // deployment; then everything else behind one tap. The previous version
   // stacked three panels that each repeated the coins, the market and the
   // Deploy card, which is why nobody could tell what was in force.
+  // A control that does nothing is worse than no control: you set it, you
+  // watch nothing change, and you stop trusting the rest of the screen. In
+  // viewer mode the device does not scan, so every device-scanner section is
+  // hidden rather than left sitting there looking functional. Turning viewer
+  // mode off brings all of them straight back.
+  const dev = !CFG.viewer;
   return `${runningNow()}
-    <div class="hint" style="margin:-6px 0 16px">Everything on this page is a
-      choice you make. What the machine <b>found</b> — scores, rankings, which
-      modules actually help — is on the <b>Matrix</b> tab.</div>
-    <h2>Bots — the engine</h2>
-    ${botsBlock()}
+    <div class="hint" style="margin:-6px 0 16px">${CFG.viewer
+      ? "The server does the scanning. What is below changes what you are "
+        + "<b>shown</b>; what gets <b>found</b> is set in the repository — "
+        + "coins in <b>bot/coins.txt</b>, everything else in <b>bot/scan.py</b>."
+      : "Everything on this page is a choice you make. What the machine "
+        + "<b>found</b> — scores, rankings, which modules actually help — is "
+        + "on the <b>Report</b> tab."}</div>
+    ${dev ? `<h2>Bots — the engine</h2>${botsBlock()}` : ""}
     <h2>How often you want signals</h2>
     ${rateBlock()}
     <h2>Coins</h2>
@@ -8015,8 +8026,7 @@ function autoPanel() {
       measures how far price has already run past the signal price, how stretched
       it is from VWAP, how far the leg has travelled, and what the book costs to
       cross — then says take it, wait for a retest at a named level, or leave it.</div>
-    <h2>Per-coin sweep — every interval</h2>
-    ${sweepBlock()}
+    ${dev ? `<h2>Per-coin sweep — every interval</h2>${sweepBlock()}` : ""}
     <h2>Background scanning</h2>
     <div class="status">
       <div class="kv"><span class="k">Use what the server found</span>
@@ -8040,7 +8050,13 @@ function autoPanel() {
         + "every " + CFG.autoRefreshMin + " minutes while the page is open. "
         + "Slower to open and heavier on battery, and it stops the moment the "
         + "tab is hidden."}</div>
-    <h2>Whale engine</h2>
+    ${CFG.viewer ? `<div class="hint" style="margin-top:6px">Hidden while the
+      server does the work, because they only affect scanning on this device:
+      <b>the bot roster and leaderboard</b>, <b>the per-coin sweep</b>, and
+      <b>the whale engine</b>. The server runs all ten strategies on every
+      coin instead — flatly, with no roster and no weighting. Switch this off
+      and they all come back.</div>` : ""}
+    ${dev ? `<h2>Whale engine</h2>
     <div class="status">
       <div class="kv"><span class="k">Read large-trader flow</span>
         <button class="sw${CFG.whaleOn ? " on" : ""}"
@@ -8049,7 +8065,7 @@ function autoPanel() {
     </div>
     <div class="hint">Off by default because it costs five extra requests per
       coin. When on, it runs after each scan rather than during it. Full
-      readings are on the Matrix tab.</div>
+      readings are on the Report tab.</div>` : ""}
     <h2>Risk gate</h2>
     <div class="status">
       ${rngRaw("dayLossR", "Stop after losing (today)", CFG.dayLossR, 0, 10, 0.5, "R")}
@@ -8080,7 +8096,7 @@ const rngRaw = (k, label, val, min, max, step, suf) =>
    for a heading that had moved. A page cannot tell you it is stale, so it
    should at least tell you what it is. Read this out and it settles the
    question in one look. */
-const BUILD = "B17 · 2026-08-12 · 2-min ready";
+const BUILD = "B19 · 2026-08-12 · shows the timeframe sweep";
 
 function buildStamp() {
   return `<div class="hint" style="margin-top:18px;text-align:center;
