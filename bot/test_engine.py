@@ -14,6 +14,8 @@ from __future__ import annotations
 import math
 import pathlib
 import sys
+import urllib.error
+import urllib.request
 
 sys.path.insert(0, str(pathlib.Path(__file__).resolve().parent))
 import scan as E   # noqa: E402
@@ -198,6 +200,282 @@ ok("every open signal names the strategy that found it",
    all(s.get("strat_name") for s in res["open"]))
 ok("nothing open is also marked closed",
    all(not s.get("closed_at") for s in res["open"]))
+
+# ------------------------------------------------- the fallback data layer
+#
+# The whole point of this layer is what happens when the first venue refuses,
+# so the tests are about refusal, not about the happy path.
+
+_calls = []
+
+
+def fake_http(responses):
+    """Replace get_json with a lookup keyed on which host is being asked."""
+    def fn(url, tries=3):
+        host = url.split("/")[2]
+        _calls.append(url)
+        r = responses.get(host)
+        if r is None:
+            raise E.Blocked(f"HTTP 451 from {host}")
+        return r(url) if callable(r) else r
+    return fn
+
+
+_real_get = E.get_json
+
+BINANCE_TK = [{"symbol": f"C{i}USDT", "quoteVolume": str(1e9 - i * 1e6),
+               "lastPrice": "100", "priceChangePercent": "2.5"}
+              for i in range(30)]
+BYBIT_TK = {"result": {"list": [
+    {"symbol": f"C{i}USDT", "turnover24h": str(1e9 - i * 1e6),
+     "lastPrice": "100", "price24hPcnt": "0.025"} for i in range(30)]}}
+
+# 1. Binance blocked, Bybit answers -> the run continues on Bybit
+E.SOURCE = None
+E._FIRST_TICKERS = None
+E.get_json = fake_http({"api.bybit.com": BYBIT_TK})
+src = E.pick_source()
+ok("a blocked exchange falls through to the next one", src[0] == "bybit",
+   str(src))
+
+tk = E.tickers()
+ok("the fallback returns a usable universe", len(tk) == 30, str(len(tk)))
+ok("and it is sorted by turnover, biggest first",
+   tk[0]["vol"] > tk[-1]["vol"])
+ok("a fraction change is converted to a percent, not left as 0.025",
+   abs(tk[0]["change"] - 2.5) < 1e-9, str(tk[0]["change"]))
+
+before = len(_calls)
+E.tickers()
+ok("probing the venue is not paid for twice", len(_calls) > before,
+   "second call goes to the wire, the probe's own result was reused once")
+
+# 2. Bybit hands candles back newest-first; reading them that way would
+#    compute every indicator backwards and still look plausible.
+rows = [[str(1_700_000_000_000 + i * 3_600_000), "1", "2", "0.5",
+         str(100 + i), "10", "1000"] for i in range(50)]
+E.get_json = fake_http({"api.bybit.com": {"result": {"list": list(reversed(rows))}}})
+kl = E._klines_from("bybit", "https://api.bybit.com", "BTCUSDT", "1h", 50)
+ok("bybit candles come back oldest-first", kl[0]["t"] < kl[-1]["t"],
+   f"{kl[0]['t']} .. {kl[-1]['t']}")
+ok("and the closes are in the right order", kl[0]["c"] == 100
+   and kl[-1]["c"] == 149, f"{kl[0]['c']} .. {kl[-1]['c']}")
+ok("the timeframe name is translated, not passed through",
+   E._BYBIT_TF["1h"] == "60" and E._OKX_TF["4h"] == "4H")
+ok("okx instrument ids are built correctly",
+   E._okx_inst("BTCUSDT") == "BTC-USDT-SWAP", E._okx_inst("BTCUSDT"))
+
+# 3. A venue that answers 200 with almost nothing is a failure, not a
+#    quiet market. Treating it as data would overwrite a good file.
+E.SOURCE = None
+E._FIRST_TICKERS = None
+E.get_json = fake_http({"api.bybit.com": {"result": {"list": BYBIT_TK["result"]["list"][:3]}},
+                        "www.okx.com": {"data": [
+                            {"instId": f"C{i}-USDT-SWAP", "last": "100",
+                             "open24h": "98", "volCcy24h": "1000"}
+                            for i in range(30)]}})
+src = E.pick_source()
+ok("an almost-empty answer is not mistaken for data", src[0] == "okx",
+   str(src))
+
+# 4. Everything refuses -> one clear sentence, not a traceback
+E.SOURCE = None
+E._FIRST_TICKERS = None
+E.get_json = fake_http({})
+try:
+    E.pick_source()
+    ok("total refusal is reported clearly", False, "it did not raise")
+except RuntimeError as e:
+    ok("total refusal is reported clearly", "no exchange would answer" in str(e)
+       and "451" in str(e), str(e)[:90])
+except Exception as e:                     # noqa: BLE001
+    ok("total refusal is reported clearly", False, repr(e))
+
+# 5. A 4xx must not be retried — a geo-block does not lift in nine seconds,
+#    and retrying it eats the time the fallback needs.
+E.get_json = _real_get
+tries_seen = []
+
+
+class _Boom(urllib.error.HTTPError):
+    def __init__(self):
+        super().__init__("http://x/y", 451, "blocked", {}, None)
+
+
+def _always_451(req, timeout=0):
+    tries_seen.append(1)
+    raise _Boom()
+
+
+_real_open = urllib.request.urlopen
+urllib.request.urlopen = _always_451
+try:
+    E.get_json("https://fapi.binance.com/fapi/v1/ticker/24hr")
+    ok("a geo-block is not retried", False, "it did not raise")
+except E.Blocked as e:
+    ok("a geo-block is not retried", len(tries_seen) == 1, f"{len(tries_seen)} attempts, {e}")
+except Exception as e:                     # noqa: BLE001
+    ok("a geo-block is not retried", False, repr(e))
+finally:
+    urllib.request.urlopen = _real_open
+    E.get_json = _real_get
+    E.SOURCE = None
+    E._FIRST_TICKERS = None
+
+# ------------------------------------------------- numbers from the runner
+#
+# This is what actually killed the first two runs on GitHub, and it killed
+# them on line one, before a single candle was fetched. A workflow that maps
+# an unset repository variable does not omit it — it sets it to "".
+
+import os as _os                            # noqa: E402
+
+
+def _with_env(name, value, fn):
+    had = _os.environ.get(name)
+    if value is None:
+        _os.environ.pop(name, None)
+    else:
+        _os.environ[name] = value
+    try:
+        return fn()
+    finally:
+        if had is None:
+            _os.environ.pop(name, None)
+        else:
+            _os.environ[name] = had
+
+
+ok("an unset variable uses the default",
+   _with_env("SCAN_BATCH", None, lambda: E.env_int("SCAN_BATCH", 18)) == 18)
+ok("an EMPTY variable uses the default too — this is the one that crashed",
+   _with_env("SCAN_BATCH", "", lambda: E.env_int("SCAN_BATCH", 18)) == 18)
+ok("whitespace is not a number either",
+   _with_env("SCAN_BATCH", "   ", lambda: E.env_int("SCAN_BATCH", 18)) == 18)
+ok("a real value is honoured",
+   _with_env("SCAN_BATCH", "30", lambda: E.env_int("SCAN_BATCH", 18)) == 30)
+ok("a typo falls back instead of stopping the scan",
+   _with_env("SCAN_BATCH", "thirty", lambda: E.env_int("SCAN_BATCH", 18)) == 18)
+ok("a number written with a decimal point still parses",
+   _with_env("MIN_CONFIDENCE", "55.0",
+             lambda: E.env_int("MIN_CONFIDENCE", 0)) == 55)
+
+# ----------------------------------------------------------- state on disk
+#
+# Untested until now, and it showed: three references to STATE had lost
+# their "E." — `STATE.read_text()` had become `STATread_text()`. Python
+# only notices an undefined name when the line actually runs, and no test
+# ever ran these two functions, so the whole scan completed and then died
+# on the last statement. Every module-level name is now also checked.
+
+import tempfile as _tf                      # noqa: E402
+import pathlib as _pl                       # noqa: E402
+
+_kept = E.STATE
+E.STATE = _pl.Path(_tf.mkdtemp()) / "nested" / "state.json"
+try:
+    fresh = E.load_state()
+    ok("a missing state file gives an empty starting point",
+       fresh["cursor"] == 0 and fresh["alerted"] == [] and fresh["runs"] == 0,
+       str(fresh))
+
+    fresh["cursor"] = 7
+    fresh["alerted"] = [f"S{i}" for i in range(500)]
+    E.save_state(fresh)
+    ok("saving creates the folder it needs", E.STATE.exists())
+
+    back = E.load_state()
+    ok("what was saved comes back", back["cursor"] == 7, str(back["cursor"]))
+    ok("the alerted list is capped so the file cannot grow forever",
+       len(back["alerted"]) == 400, str(len(back["alerted"])))
+    ok("and it keeps the most recent ones, not the oldest",
+       back["alerted"][-1] == "S499", back["alerted"][-1])
+
+    E.STATE.write_text("{ this is not json")
+    ok("a corrupted state file is started over, not fatal",
+       E.load_state()["cursor"] == 0)
+finally:
+    E.STATE = _kept
+
+# A name that only exists on a rarely-run line is invisible until that line
+# runs. Compile every function and check each global it reaches for.
+import ast as _ast                          # noqa: E402
+import builtins as _bi                      # noqa: E402
+
+_src = _pl.Path(E.__file__).read_text()
+_tree = _ast.parse(_src)
+_known = set(dir(E)) | set(dir(_bi))
+_missing = set()
+
+
+
+def _bound_inside(node):
+    """Every name a function body can legally see from within itself:
+    its own arguments, anything it assigns, the arguments of any nested
+    function or lambda, and the `as e` of an except clause."""
+    names = set()
+    for n in _ast.walk(node):
+        if isinstance(n, (_ast.FunctionDef, _ast.AsyncFunctionDef,
+                          _ast.Lambda)):
+            a = n.args
+            for grp in (a.args, a.posonlyargs, a.kwonlyargs):
+                names.update(x.arg for x in grp)
+            for extra in (a.vararg, a.kwarg):
+                if extra:
+                    names.add(extra.arg)
+            if isinstance(n, (_ast.FunctionDef, _ast.AsyncFunctionDef)):
+                names.add(n.name)
+        elif isinstance(n, _ast.ExceptHandler) and n.name:
+            names.add(n.name)
+        elif isinstance(n, _ast.Name) and isinstance(n.ctx, _ast.Store):
+            names.add(n.id)
+        elif isinstance(n, _ast.alias):
+            names.add((n.asname or n.name).split(".")[0])
+    return names
+
+
+for _node in _tree.body:
+    if isinstance(_node, _ast.FunctionDef):
+        _local = _bound_inside(_node)
+        for _n in _ast.walk(_node):
+            if isinstance(_n, _ast.Name) and isinstance(_n.ctx, _ast.Load):
+                if _n.id not in _local and _n.id not in _known:
+                    _missing.add(f"{_node.name}: {_n.id}")
+ok("no function reaches for a name that does not exist",
+   not _missing, ", ".join(sorted(_missing)) or "none")
+
+# ------------------------------------------------------- the coin list file
+
+_keptc = E.COINS
+_dir = _pl.Path(_tf.mkdtemp())
+E.COINS = _dir / "coins.txt"
+try:
+    ok("no file means no list, so the server falls back to turnover",
+       E.wanted_coins() == [], str(E.wanted_coins()))
+
+    E.COINS.write_text("BTC\neth\n  SOLUSDT  \n\n# a note\nBNB # inline note\n"
+                       "DOGE-USDT\nBTC\n")
+    got = E.wanted_coins()
+    ok("bare names get USDT added", "BTCUSDT" in got and "ETHUSDT" in got,
+       str(got))
+    ok("lower case is accepted", "ETHUSDT" in got)
+    ok("a full symbol is left alone", "SOLUSDT" in got)
+    ok("comments and blank lines are ignored",
+       "#ANOTEUSDT" not in " ".join(got) and len(got) == 5, str(got))
+    ok("an inline comment does not become part of the name",
+       "BNBUSDT" in got, str(got))
+    ok("dashes and slashes are tolerated", "DOGEUSDTUSDT" not in got
+       and "DOGEUSDT" in got, str(got))
+    ok("a coin listed twice is only scanned once",
+       got.count("BTCUSDT") == 1, str(got))
+    ok("and the order you wrote is the order it scans",
+       got == ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT"], str(got))
+
+    E.COINS.write_text("\n\n#only comments\n   \n")
+    ok("a file with nothing usable in it counts as no list",
+       E.wanted_coins() == [], str(E.wanted_coins()))
+finally:
+    E.COINS = _keptc
 
 print()
 print(f"{len(PASS)} passed, {len(FAIL)} failed")

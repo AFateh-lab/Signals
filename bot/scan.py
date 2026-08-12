@@ -777,6 +777,34 @@ from email.message import EmailMessage
 ROOT = pathlib.Path(__file__).resolve().parent.parent
 OUT = ROOT / "signals.json"
 STATE = ROOT / "bot" / "state.json"
+COINS = ROOT / "bot" / "coins.txt"
+
+
+def wanted_coins() -> list[str]:
+    """The coins you asked for, or nothing if you have not asked.
+
+    Read from bot/coins.txt — one symbol per line, blank lines and anything
+    after a # ignored. Kept as a plain file rather than a repository
+    variable so it can be edited in the browser on a phone, and so the list
+    is visible in the repository instead of hidden in a settings page.
+
+    Written loosely on purpose: `btc`, `BTC` and `BTCUSDT` all mean the
+    same thing. A list that rejects your input because you typed it the
+    wrong way is a list you stop maintaining."""
+    try:
+        raw = COINS.read_text()
+    except Exception:                      # noqa: BLE001 - absent is normal
+        return []
+    out = []
+    for line in raw.splitlines():
+        sym = line.split("#")[0].strip().upper().replace("-", "").replace("/", "")
+        if not sym:
+            continue
+        if not sym.endswith("USDT"):
+            sym += "USDT"
+        if sym not in out:
+            out.append(sym)
+    return out
 
 # How much of the coin list one run covers. A scheduled job that tries to do
 # everything gets killed halfway and writes nothing; one that does a slice
@@ -928,8 +956,26 @@ def main() -> int:
     if not tk:
         print("no ticker data; leaving the last file alone")
         return 1
-    universe = [t["symbol"] for t in tk[:CFG["pairs"]]]
     by_sym = {t["symbol"]: t for t in tk}
+
+    # Your list wins if you have one. Anything in it the venue does not
+    # carry is named rather than silently dropped — a coin quietly missing
+    # from a list you wrote yourself is worse than one that complains.
+    asked = wanted_coins()
+    unknown = [s for s in asked if s not in by_sym]
+    known = [s for s in asked if s in by_sym]
+    if asked and not known:
+        print(f"none of the {len(asked)} coins in bot/coins.txt exist here "
+              f"({SOURCE[0] if SOURCE else '?'}) — scanning by turnover instead")
+    if known:
+        universe = known
+        coin_source = f"bot/coins.txt ({len(known)} coins)"
+    else:
+        universe = [t["symbol"] for t in tk[:CFG["pairs"]]]
+        coin_source = f"top {len(universe)} by turnover"
+    if unknown:
+        print(f"not available on this venue, skipped: {', '.join(unknown)}")
+    print(f"coins: {coin_source}")
 
     cursor = state.get("cursor", 0) % max(1, len(universe))
     batch = [universe[(cursor + k) % len(universe)] for k in range(min(BATCH, len(universe)))]
@@ -941,7 +987,13 @@ def main() -> int:
         prev = json.loads(OUT.read_text())
     except Exception:                      # noqa: BLE001
         prev = {"signals": []}
-    kept = [s for s in prev.get("signals", []) if s["symbol"] not in batch]
+    # Drop this batch's old entries (they are about to be replaced) and
+    # anything for a coin no longer on the list. Without the second half,
+    # narrowing your coins would leave the removed ones sitting in the file
+    # for a day and a half, still showing on the page as if current.
+    inplay = set(universe)
+    kept = [s for s in prev.get("signals", [])
+            if s["symbol"] not in batch and s["symbol"] in inplay]
 
     fresh, closed_all, failed = [], [], []
     for sym in batch:
@@ -982,6 +1034,9 @@ def main() -> int:
         "run_seconds": round(time.time() - started, 1),
         "scanned": batch,
         "universe": len(universe),
+        "coins": universe,
+        "coin_source": coin_source,
+        "coins_missing": unknown,
         "cursor": state["cursor"],
         "runs": state.get("runs", 0) + 1,
         "strategies": [STRAT_NAMES[k] for k in STRATS],
