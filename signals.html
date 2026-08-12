@@ -5022,6 +5022,16 @@ async function fetchSignalsJson() {
   return await r2.json();
 }
 
+/* In viewer mode nothing on this device ever calls the exchange, so the coin
+   list that the search box and the "Add top 100" buttons draw from was never
+   filled — they sat on "still loading" for ever. The server already publishes
+   exactly the right list: the coins it scans, in turnover order. */
+function adoptServerCoins(j) {
+  if (!CFG.viewer || !j || !Array.isArray(j.coins) || !j.coins.length) return false;
+  ALLSYMS = j.coins.slice();
+  return true;
+}
+
 async function loadServer() {
   if (!SERVER.on || SERVER.loading) return;
   // Opened straight from a file rather than served over the web: the browser
@@ -5043,6 +5053,7 @@ async function loadServer() {
     // bot pushes, and sends CORS headers, so the page can read it directly.
     const j = await fetchSignalsJson();
     SERVER.data = j; SERVER.at = Date.now(); SERVER.err = null;
+    adoptServerCoins(j);
   } catch (e) {
     // Not an error worth shouting about: the file only exists once the
     // scheduled job has run at least once.
@@ -5432,6 +5443,7 @@ function bookMerge(passed, live) {
    ========================================================================= */
 async function viewerRun() {
   await loadServer();
+  adoptServerCoins(SERVER.data);
   const only = CFG.pairMode === "custom" ? new Set(mineList()) : null;
   const now = Date.now();
   // The server applies its own rules before publishing. These are yours,
@@ -8096,7 +8108,7 @@ const rngRaw = (k, label, val, min, max, step, suf) =>
    for a heading that had moved. A page cannot tell you it is stale, so it
    should at least tell you what it is. Read this out and it settles the
    question in one look. */
-const BUILD = "B19 · 2026-08-12 · shows the timeframe sweep";
+const BUILD = "B20 · 2026-08-12 · viewer coin list + status";
 
 function buildStamp() {
   return `<div class="hint" style="margin-top:18px;text-align:center;
@@ -8106,6 +8118,30 @@ function buildStamp() {
 function runningNow() {
   const on = enabledBots();
   const names = on.map((b) => b.name).join(", ");
+  const nOpen = OPEN.filter((x) => !x.belowBar && !entryGone(x)).length;
+  // "Stopped — press Run to start the bots" is a lie in viewer mode. Nothing
+  // is stopped; the scanning simply is not happening here.
+  if (CFG.viewer) {
+    const j = SERVER.data;
+    const age = j && j.generated
+      ? Math.round((Date.now() - j.generated) / 60000) : null;
+    return `<div class="card" style="margin-bottom:14px;border-color:${
+        j ? "#2b6b45" : "#5c3a17"}">
+      <div class="kv" style="border:0;padding-top:0">
+        <span class="k" style="font-weight:800;font-size:15px">${j
+          ? '<span class="good">● The server is scanning</span>'
+          : "● Waiting for the server"}</span>
+        <span class="v">${nOpen} signal${nOpen === 1 ? "" : "s"} open</span>
+      </div>
+      <div class="hint" style="margin-bottom:0">${j
+        ? `Ten strategies across ${(j.timeframes || []).length || 3} timeframes
+           on <b>${j.universe || "?"}</b> coins. Last run
+           <b>${age == null ? "—" : age + " min ago"}</b>; this page re-reads it
+           every two minutes. Nothing to start and nothing to leave open.`
+        : "No results file yet. It appears after the scheduled job has run "
+          + "once." + (SERVER.err ? " (" + esc(SERVER.err) + ")" : "")}</div>
+    </div>`;
+  }
   return `<div class="card" style="margin-bottom:14px;border-color:${
       ENGINE.on ? "#2b6b45" : "#3a3a45"}">
     <div class="kv" style="border:0;padding-top:0">
@@ -8858,7 +8894,12 @@ function onlyMine() {
    valuation and no volume cannot be traded on a stop, whatever a coin-ranking
    site says about it. */
 function addTopN(n) {
-  if (!ALLSYMS.length) { toast("Coin list still loading — try again in a moment"); return; }
+  if (!ALLSYMS.length) {
+    toast(CFG.viewer
+      ? "Waiting for the server's coin list — it arrives with the next scan"
+      : "Coin list still loading — try again in a moment");
+    return;
+  }
   const add = ALLSYMS.slice(0, n);
   const before = mineList().length;
   CFG.focus = [...new Set([...CFG.focus, ...add])];
