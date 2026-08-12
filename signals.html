@@ -5322,9 +5322,14 @@ async function run() {
       const bl = new Set(CFG.blacklist);
       ALLSYMS = tk.filter(x=>!bl.has(x.symbol) && x.vol > 0)
                   .sort((a,b)=>b.vol-a.vol).map(x=>x.symbol);
-      if (CFG.pairMode === "custom" && CFG.custom.length) {
-        // Exactly what you picked, nothing else.
-        UNIVERSE = CFG.custom.filter(s=>bySym[s]);
+      if (CFG.pairMode === "custom") {
+        // Exactly what you picked, nothing else. One list: the coins in
+        // "Your coins". There used to be a second, separate list behind the
+        // picker, so choosing coins in one place did nothing to the other —
+        // which is why signals kept arriving from coins you had not picked.
+        const mine = mineList();
+        UNIVERSE = mine.filter((x) => bySym[x]);
+        if (!UNIVERSE.length) UNIVERSE = mine.slice();
       }
       // Always computed - the Market tiles use it whichever pair mode is on.
       const focus = CFG.focus.filter(s=>bySym[s]);
@@ -5356,8 +5361,7 @@ async function run() {
   } catch (e) { /* fall through to the fallback list */ }
 
   if (!UNIVERSE.length) {
-    UNIVERSE = (CFG.pairMode === "custom" && CFG.custom.length)
-      ? CFG.custom.slice() : CFG.focus.slice();
+    UNIVERSE = CFG.pairMode === "custom" ? mineList() : CFG.focus.slice();
   }
   const syms = UNIVERSE.slice();
   render();
@@ -8417,6 +8421,16 @@ function focusBlock() {
       autocapitalize="characters" autocomplete="off" spellcheck="false">
     <div class="chips">${add || '<span class="hint">Waiting for the coin list…'
       + '</span>'}</div>
+    <div class="kv" style="margin-top:8px"><span class="k">
+        <b>Scan only these coins</b></span>
+      <button class="sw${CFG.pairMode === "custom" ? " on" : ""}"
+        onclick="onlyMine()"></button></div>
+    <div class="hint">${CFG.pairMode === "custom"
+      ? "Only your " + mineList().length + " coins are scanned. Nothing else "
+        + "can produce a signal."
+      : "Off — your coins are always scanned and listed first, but the app "
+        + "also looks at the top " + CFG.pairs + " by turnover, so signals "
+        + "will arrive from coins you did not pick."}</div>
     <div class="pickbar" style="margin-top:6px">
       <button onclick="focusMajors()">Add the majors</button>
       <button onclick="CFG.focus=[];writeHash();render(true);refresh()">Clear</button>
@@ -8445,10 +8459,27 @@ function focusFilter(q) {
 const MAJORS = ["BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT","ADAUSDT",
                 "DOGEUSDT","AVAXUSDT","LINKUSDT","DOTUSDT"];
 
+function onlyMine() {
+  if (CFG.pairMode === "custom") {
+    CFG.pairMode = "volume";
+  } else {
+    if (!mineList().length) { toast("Add a coin first"); return; }
+    CFG.pairMode = "custom";
+    CFG.custom = [];                 // one list from here on
+  }
+  writeHash(); render(true); refresh();
+}
+
 function focusMajors() {
   CFG.focus = [...new Set([...CFG.focus, ...MAJORS])];
   writeHash(); render(true); refresh();
   toast("Majors added");
+}
+
+/* Your coins, as one list. `custom` is kept only so old links and saved
+   setups still open — anything in it is folded in rather than competing. */
+function mineList() {
+  return [...new Set([...(CFG.focus || []), ...(CFG.custom || [])])];
 }
 
 function focusOn(sym) {
@@ -8468,6 +8499,7 @@ function toggleFocus(sym) {
 }
 
 function pickerBlock() {
+  // The picker edits the same list as "Your coins" above — see mineList().
   return `<div class="segnote">Pick a sector, or choose coins one by one.</div>
     <div class="chips cats" id="cats">${catsHtml()}</div>
     <input class="search" id="pq" placeholder="Search coins…"
@@ -8477,7 +8509,8 @@ function pickerBlock() {
     <div class="pickbar">
       <button onclick="pickAll(false)">Clear</button>
       <button onclick="pickFocus()">Add majors</button>
-      <button class="go" onclick="applyPicks()">Scan ${CFG.custom.length}</button>
+      <button class="go" onclick="applyPicks()">Scan ${
+        CFG.custom.length || mineList().length}</button>
     </div>
     <div class="segnote">Your picks live in the page address, so a reload — or the
       home-screen icon — remembers them, and the link carries them to anyone you
@@ -8530,8 +8563,11 @@ function pickFocus() {
 }
 function applyPicks() {
   if (!CFG.custom.length) { toast("Pick at least one coin"); return; }
+  // Fold the picks into the one list rather than keeping a second one.
+  CFG.focus = [...new Set([...CFG.focus, ...CFG.custom])];
+  CFG.custom = [];
   CFG.pairMode = "custom"; writeHash();
-  toast("Scanning " + CFG.custom.length + " coins");
+  toast("Scanning your " + CFG.focus.length + " coins");
   render(); run();
 }
 function setMarket(m) {
