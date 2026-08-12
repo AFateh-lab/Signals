@@ -82,13 +82,39 @@ def get_json(url: str, tries: int = 3) -> Any:
     raise Blocked(f"failed after {tries}: {last}")
 
 
-# Every venue names its timeframes differently. Only these two are used.
-_BYBIT_TF = {"1m": "1", "5m": "5", "15m": "15", "30m": "30", "1h": "60",
-             "2h": "120", "4h": "240", "6h": "360", "12h": "720",
-             "1d": "D", "1w": "W"}
-_OKX_TF = {"1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m", "1h": "1H",
-           "2h": "2H", "4h": "4H", "6h": "6H", "12h": "12H", "1d": "1D",
-           "1w": "1W"}
+# Every venue names its timeframes differently, and — more importantly — they
+# do not offer the same ones. Binance has 8h; OKX and Bybit do not. A lookup
+# with a default silently substitutes another period, which is the worst
+# possible failure: the scan succeeds, the card says 8h, and the numbers came
+# from an hourly chart. These maps are exhaustive and a miss raises.
+#
+# Nothing shorter than a minute is here. Binance futures does not serve it,
+# and five hundred one-second candles is eight minutes of history — less than
+# the warm-up of a 200-period average, so every indicator would be undefined.
+# A one-second chart is not a faster version of this; it is a different
+# instrument needing a different engine.
+_ALL_TF = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "8h",
+           "12h", "1d", "3d", "1w", "1M"]
+
+_BYBIT_TF = {"1m": "1", "3m": "3", "5m": "5", "15m": "15", "30m": "30",
+             "1h": "60", "2h": "120", "4h": "240", "6h": "360", "12h": "720",
+             "1d": "D", "1w": "W", "1M": "M"}
+_OKX_TF = {"1m": "1m", "3m": "3m", "5m": "5m", "15m": "15m", "30m": "30m",
+           "1h": "1H", "2h": "2H", "4h": "4H", "6h": "6H", "12h": "12H",
+           "1d": "1D", "3d": "3D", "1w": "1W", "1M": "1M"}
+_BINANCE_TF = {k: k for k in _ALL_TF}          # it serves all of them
+
+
+class Unsupported(Exception):
+    """This venue does not offer that chart period."""
+
+
+def venue_tf(kind: str, interval: str) -> str:
+    table = (_BINANCE_TF if kind == "binance"
+             else _BYBIT_TF if kind == "bybit" else _OKX_TF)
+    if interval not in table:
+        raise Unsupported(f"{kind} has no {interval} chart")
+    return table[interval]
 
 
 def _okx_inst(symbol: str) -> str:
@@ -100,7 +126,8 @@ def _klines_from(kind: str, host: str, symbol: str, interval: str,
                  limit: int) -> list[dict]:
     if kind == "binance":
         q = urllib.parse.urlencode(
-            {"symbol": symbol, "interval": interval, "limit": limit})
+            {"symbol": symbol, "interval": venue_tf("binance", interval),
+             "limit": limit})
         rows = get_json(f"{host}/fapi/v1/klines?{q}")
         return [{"t": int(r[0]), "o": float(r[1]), "h": float(r[2]),
                  "l": float(r[3]), "c": float(r[4]), "v": float(r[5])}
@@ -109,7 +136,7 @@ def _klines_from(kind: str, host: str, symbol: str, interval: str,
     if kind == "bybit":
         q = urllib.parse.urlencode({
             "category": "linear", "symbol": symbol,
-            "interval": _BYBIT_TF.get(interval, "60"),
+            "interval": venue_tf("bybit", interval),
             "limit": min(limit, 1000)})
         d = get_json(f"{host}/v5/market/kline?{q}")
         rows = (d.get("result") or {}).get("list") or []
@@ -122,7 +149,7 @@ def _klines_from(kind: str, host: str, symbol: str, interval: str,
                 for r in rows]
 
     q = urllib.parse.urlencode({
-        "instId": _okx_inst(symbol), "bar": _OKX_TF.get(interval, "1H"),
+        "instId": _okx_inst(symbol), "bar": venue_tf("okx", interval),
         "limit": min(limit, 300)})
     d = get_json(f"{host}/api/v5/market/candles?{q}")
     rows = list(reversed(d.get("data") or []))          # newest-first too
@@ -1638,6 +1665,9 @@ def env_int(name: str, default: int) -> int:
 # Fewer coins per run than before, because each one now costs four downloads
 # instead of two. The full list is still covered in the same wall-clock time;
 # the work is just spread over more runs.
+# Coins per run. Each one now costs a download per timeframe, so a wide
+# ladder has to be paid for with a smaller slice or the run stops fitting
+# inside the gap between runs. Set SCAN_BATCH yourself to override.
 BATCH = env_int("SCAN_BATCH", 12)
 
 
@@ -1653,6 +1683,36 @@ BATCH = env_int("SCAN_BATCH", 12)
 # confluence a setup needs, and how many independent reads have to back it.
 # Nothing here changes the maths of a trade, only how selective it is.
 # =========================================================================
+
+def every_pair(tfs: list[str], gap: int = 2) -> list[tuple[str, str]]:
+    """Every signal period paired with every higher trend period.
+
+    `gap` is how many rungs above the signal the trend has to sit. One rung is
+    not a trend filter — 15m filtered by 30m is the same information twice —
+    so the default is two.
+
+    This is cheap in the place that matters: the cost of a scan is downloads,
+    and a period is downloaded once however many pairs use it. Twelve periods
+    is twelve downloads and about fifty pairs.
+
+    It is not cheap statistically, and that is the part to be honest about.
+    Fifty attempts per coin per direction means something will almost always
+    clear the bar, whether or not the coin is doing anything. The sweep keeps
+    one signal per coin and side, so this raises the chance of finding
+    something rather than the number of things found — but the something is
+    more likely to be an accident than it would be from three attempts."""
+    out = []
+    for i, s in enumerate(tfs):
+        for h in tfs[i + gap:]:
+            out.append((s, h))
+    return out
+
+
+# Periods every venue in SOURCES actually serves. 8h and 3d are Binance-only
+# and Binance refuses the runner, so they are left out rather than failing on
+# every coin.
+_COMMON_TF = ["1m", "3m", "5m", "15m", "30m", "1h", "2h", "4h", "6h", "12h",
+              "1d", "1w"]
 
 RATES: dict[str, dict[str, Any]] = {
     # A handful a day. Only the slower periods, and they have to be convincing.
@@ -1675,18 +1735,29 @@ RATES: dict[str, dict[str, Any]] = {
     # finding something on a given coin rather than stacking five versions of
     # the same idea.
     "busy": {"tf_ladder": [("5m", "15m"), ("15m", "1h"), ("30m", "2h"),
-                           ("1h", "4h"), ("2h", "8h"), ("4h", "1d")],
+                           ("1h", "4h"), ("2h", "6h"), ("4h", "1d")],
              "min_score": 5, "min_agree": 1, "require_htf": True,
              "adx_min": 18},
+    # Every period the exchange offers, from one minute to a day, with the
+    # trend check still on. Eleven rungs.
+    #
+    # This is the honest ceiling for "look everywhere". Below about fifteen
+    # minutes the strategies are mostly reading noise — a one-minute breakout
+    # is a rounding error with a name — so the extra rungs raise the number of
+    # signals a lot and the number of good ones very little. It is here
+    # because you asked to see everything, and because the only way to find
+    # out whether the fast periods work on your coins is to let them run and
+    # read the Results tab in a fortnight.
+    "max": {"tf_ladder": every_pair(_COMMON_TF, 2),
+            "min_score": 4, "min_agree": 1, "require_htf": True,
+            "adx_min": 15},
     # Everything the strategies can see, with the higher-timeframe check off.
     # This is a firehose and a bad way to trade; it is here because seeing the
     # raw output is sometimes the fastest way to understand what the thing
     # does.
-    "flood": {"tf_ladder": [("5m", "15m"), ("15m", "1h"), ("30m", "2h"),
-                            ("1h", "4h"), ("2h", "8h"), ("4h", "1d"),
-                            ("6h", "1d"), ("12h", "1w")],
-              "min_score": 4, "min_agree": 0, "require_htf": False,
-              "adx_min": 15},
+    "flood": {"tf_ladder": every_pair(_COMMON_TF, 1),
+              "min_score": 3, "min_agree": 0, "require_htf": False,
+              "adx_min": 10},
 }
 
 RATE = (os.environ.get("SCAN_RATE") or "normal").strip().lower()
@@ -1702,6 +1773,17 @@ CFG.update(RATES[RATE])
 # fetched.
 TF_NEEDED = sorted({tf for pair in CFG["tf_ladder"] for tf in pair},
                    key=lambda x: ("mhdw".index(x[-1]), int(x[:-1])))
+
+# Keep the run inside the gap between runs. Eleven downloads a coin at twelve
+# coins is well over two minutes, and runs that overlap queue up and drift.
+# Only applied when you have not set SCAN_BATCH yourself.
+if not (os.environ.get("SCAN_BATCH") or "").strip():
+    if len(TF_NEEDED) >= 9:
+        BATCH = 5
+    elif len(TF_NEEDED) >= 7:
+        BATCH = 8
+print(f"rate: {RATE} — {len(CFG['tf_ladder'])} ladders, "
+      f"{len(TF_NEEDED)} downloads per coin, {BATCH} coins per run")
 MIN_CONF_ALERT = env_int("MIN_CONFIDENCE", 0)
 
 
@@ -1924,7 +2006,7 @@ def card(s: dict) -> str:
 # 1026 lines look identical from the outside, and a run that fails on old
 # code while you are reading new code wastes an afternoon. This says which
 # build actually executed.
-BUILD = "S8 · 2026-08-12 · wider ladders + pipeline"
+BUILD = "S9 · 2026-08-12 · every period, every pair"
 
 
 def main() -> int:
@@ -2007,6 +2089,7 @@ def main() -> int:
 
     fresh, closed_all, failed = [], [], []
     pending_all: list[dict] = []
+    skipped_tf: list[str] = []
     tracked: dict[str, dict] = {}
     for sym in batch:
         try:
@@ -2016,7 +2099,16 @@ def main() -> int:
             # separately would be six.
             bars: dict[str, list[dict]] = {}
             for tf in TF_NEEDED:
-                bars[tf] = klines(sym, tf, CFG["bars"])
+                try:
+                    bars[tf] = klines(sym, tf, CFG["bars"])
+                except Unsupported as e:
+                    # One period this venue does not carry must not cost the
+                    # coin. scan_coin skips any ladder whose bars are missing.
+                    if tf not in skipped_tf:
+                        skipped_tf.append(f"{tf}: {e}")
+                except Exception as e:            # noqa: BLE001
+                    if tf not in skipped_tf:
+                        skipped_tf.append(f"{tf}: {e}")
             res = scan_coin(sym, bars)
             fresh.extend(res["open"])
             closed_all.extend(res["closed"])
@@ -2070,6 +2162,7 @@ def main() -> int:
         "timeframes": [f"{a} / {b}" for a, b in CFG["tf_ladder"]],
         "rate": RATE,
         "failed": failed[:10],
+        "skipped_timeframes": skipped_tf[:6],
         "signals": allsig[:120],
         # What is one condition away from firing, and which condition. Kept
         # separate from `signals` so nothing downstream can mistake a queue

@@ -895,8 +895,6 @@ async function tickLive() {
     const px = LIVE.get(sig.symbol);
     if (!(px > 0)) continue;
     if (Math.abs(px - sig.entry)/sig.entry > 0.5) continue;   // clearly a mismatch
-    // A re-priced card is quoted at the price now, so "now" has to keep up.
-    if (repriceTick(sig, px)) continue;
     sig.price = round(px, sig.entry);
     sig.roi = +(((sig.price - sig.entry)/sig.entry)*100
               * (sig.side === "LONG" ? 1 : -1) * sig.leverage).toFixed(2);
@@ -5595,6 +5593,7 @@ async function viewerRun() {
     : list;
   priced.sort((a, b) => (b.confidence || 0) - (a.confidence || 0) || b.at - a.at);
   OPEN = priced.slice(0, CFG.maxOpen);
+  pruneRepriced(list);
   CLOSED = [];
   LASTRUN = Date.now();
   setDot(SERVER.err ? "bad" : "");
@@ -6622,9 +6621,10 @@ function card(s, i) {
       style="color:#f0c14b">Do not chase · ${esc(s.chase.why[0])}${
       s.chase.retest ? " · wait for a retest near <b>" + s.chase.retest + "</b>"
       : ""}</div>` : ""}
-    ${s.repriced ? `<div class="why" style="color:#8ff0c0">Re-priced at the
-      price now &middot; reward:risk <b>${s.rr}</b> to the final target,
-      <b>${s.rr1}</b> to the first${
+    ${s.repriced ? `<div class="why" style="color:#8ff0c0">Entry fixed when
+      you first saw it${s.repriceBase && s.repriceBase.fixedAt
+        ? " &middot; " + age(s.repriceBase.fixedAt) : ""}
+      &middot; reward:risk <b>${s.rr}</b> to the final target${
       s.gone ? " &middot; " + s.gone + " target"
         + (s.gone === 1 ? "" : "s") + " already passed" : ""}</div>` : ""}
     <div class="prices"><span>Entry Price: <b>${s.entry}</b></span>
@@ -6635,9 +6635,11 @@ function card(s, i) {
         s.targets[0].roi.toFixed(1)}%</span>` : ""}</span>
       <span>Final target: <b class="up">${
         s.targets.length ? s.targets[s.targets.length-1].price : "—"}</b></span></div>
-    <div class="cur"><span class="lbl">${s.closedAt?"Final Price":"Current Price"}</span>
-      <b${s.closedAt?"":' data-px="'+esc(s.symbol)+'"'}>${s.price}</b>
-      <span class="${cls(s.roi)}"${s.closedAt?"":' data-roi="'+esc(s.symbol)+'"'}
+    <div class="cur"><span class="lbl">${s.closedAt ? "Final Price"
+      : "Current Price"}</span>
+      <b${s.closedAt ? "" : ' data-px="' + esc(s.symbol) + '"'}>${s.price}</b>
+      <span class="${cls(s.roi)}"${
+        s.closedAt ? "" : ' data-roi="' + esc(s.symbol) + '"'}
         >${sgn(s.roi)}</span></div>
     <div class="tgts">${rows}</div>
     <div class="why">${esc(s.reasons.join(" · "))}</div>
@@ -8289,7 +8291,7 @@ const rngRaw = (k, label, val, min, max, step, suf) =>
    for a heading that had moved. A page cannot tell you it is stale, so it
    should at least tell you what it is. Read this out and it settles the
    question in one look. */
-const BUILD = "B32 · 2026-08-12 · re-priced against the live tick";
+const BUILD = "B34 · 2026-08-12 · entry fixed once, then it moves";
 
 function buildStamp() {
   return `<div class="hint" style="margin-top:18px;text-align:center;
@@ -9213,35 +9215,78 @@ function repriceFrom(base, side, px) {
   };
 }
 
-function reprice(s) {
-  if (!CFG.reprice || s.closedAt || !s.targets || !s.targets.length) return s;
-  // Freshest price wins. The server's copy is up to a scan old; the ticker is
-  // six seconds old. Anchoring to the stale one is what left a few percent of
-  // phantom loss on a card that had already been re-priced.
-  const px = LIVE.get(s.symbol) || s.price;
-  const base = { stop: s.initialStop != null ? s.initialStop : s.stop,
-                 targets: s.targets.map((t) => ({ ...t })) };
-  const out = repriceFrom(base, s.side, px);
-  if (!out) return { ...s, repriceDead: true };
-  return { ...s, ...out, repriced: true, repriceBase: base };
+/* Fixed the moment you first see it, and never again.
+
+   The first version of this re-anchored the entry on every tick, which meant
+   entry always equalled the price and the card read +0.00% for ever. True,
+   and useless: a market that is plainly moving looked frozen.
+
+   An entry is a decision, and a decision happens once. So the price is taken
+   the first time a signal reaches your screen, written down, and left alone.
+   After that the profit and loss moves with the market, which is the whole
+   point of watching it. */
+const RPKEY = "signals.entries.v1";
+const REPRICED = new Map();          // sigKey -> the entry as it was fixed
+
+function saveRepriced() {
+  try {
+    const rows = [...REPRICED.entries()].slice(-200);
+    localStorage.setItem(RPKEY, JSON.stringify(rows));
+  } catch (e) { /* private mode */ }
 }
 
-/* Re-anchor an already re-priced card to the newest tick. Without this the
-   entry is frozen at whatever the price was when the scan was read, and the
-   percentage beside it starts drifting away from zero again within seconds —
-   which is the whole problem this was meant to remove. */
-function repriceTick(s, px) {
-  if (!CFG.reprice || !s.repriced || !s.repriceBase || s.closedAt) return false;
-  const out = repriceFrom(s.repriceBase, s.side, px);
-  if (!out) {
-    // Price has reached the stop, or run through every target. Stop
-    // pretending there is an entry here and let the card say so.
-    s.repriced = false;
-    s.repriceDead = true;
-    return true;
+function loadRepriced() {
+  try {
+    for (const [k, v] of JSON.parse(localStorage.getItem(RPKEY) || "[]")) {
+      if (k && v && v.entry) REPRICED.set(k, v);
+    }
+  } catch (e) { /* nothing to restore */ }
+}
+
+function reprice(s) {
+  if (!CFG.reprice || s.closedAt || !s.targets || !s.targets.length) return s;
+  const k = sigKey(s);
+  const px = LIVE.get(s.symbol) || s.price;
+  let fix = REPRICED.get(k);
+
+  if (!fix) {
+    const base = { stop: s.initialStop != null ? s.initialStop : s.stop,
+                   targets: s.targets.map((x) => ({ ...x })) };
+    const out = repriceFrom(base, s.side, px);
+    if (!out) return { ...s, repriceDead: true };
+    fix = { entry: out.entry, stop: out.stop, leverage: out.leverage,
+            targets: out.targets, rr: out.rr, rr1: out.rr1, gone: out.gone,
+            entry0: s.entry, fixedAt: Date.now() };
+    REPRICED.set(k, fix);
+    saveRepriced();
   }
-  Object.assign(s, out);
-  return true;
+
+  // From here the entry is history. Only the profit and loss moves.
+  const long = s.side === "LONG";
+  // Unrealised, so gross. Costs are real but they are paid on the way out,
+  // and every target figure already has them taken off. Charging the round
+  // trip at the instant the entry is fixed would open every card at about
+  // -1.4% and read as a loss before anything had happened.
+  const gross = (px - fix.entry) / fix.entry * 100 * (long ? 1 : -1)
+              * fix.leverage;
+  return { ...s, entry: fix.entry, stop: fix.stop,
+           initialStop: fix.stop, leverage: fix.leverage,
+           targets: fix.targets.map((x) => ({ ...x })),
+           price: round(px, fix.entry), roi: +gross.toFixed(2),
+           repriced: true, rr: fix.rr, rr1: fix.rr1, gone: fix.gone,
+           repriceBase: { entry0: fix.entry0, fixedAt: fix.fixedAt } };
+}
+
+/* Forget the entries of signals that are no longer live, so the store does
+   not grow for ever and a coin that comes back later starts fresh. */
+function pruneRepriced(live) {
+  if (!REPRICED.size) return;
+  const keep = new Set(live.map(sigKey));
+  let cut = 0;
+  for (const k of [...REPRICED.keys()]) {
+    if (!keep.has(k)) { REPRICED.delete(k); cut++; }
+  }
+  if (cut) saveRepriced();
 }
 
 /* Was this signal born after you started watching the coin? */
@@ -12218,7 +12263,8 @@ let chRz; window.addEventListener("resize", ()=>{
 
 /* ------------------------------------------------------------------- start */
 readHash();
-loadBots(); loadMatrix(); loadModules(); loadEvo(); loadBook(); loadServer();
+loadBots(); loadMatrix(); loadModules(); loadEvo(); loadBook();
+loadRepriced(); loadServer();
 loadSession();
 loadDeploy();
 // The backtester starts from whatever the app is currently set to, then keeps

@@ -702,8 +702,9 @@ finally:
 
 # ------------------------------------------------- how often you want signals
 
-ok("there are four rates, calm through flood",
-   sorted(E.RATES) == ["busy", "calm", "flood", "normal"], str(sorted(E.RATES)))
+ok("there are five rates, calm through flood",
+   sorted(E.RATES) == ["busy", "calm", "flood", "max", "normal"],
+   str(sorted(E.RATES)))
 ok("each rate names every knob it moves, so none of them leak between rates",
    len({frozenset(v) for v in E.RATES.values()}) == 1,
    str([sorted(v) for v in E.RATES.values()][:1]))
@@ -713,11 +714,45 @@ ok("faster rates add faster charts rather than only loosening filters",
    str([len(E.RATES[k]["tf_ladder"]) for k in ("calm", "normal", "busy")]))
 ok("and the selectivity moves the way the name implies",
    E.RATES["calm"]["min_score"] > E.RATES["normal"]["min_score"]
-   > E.RATES["busy"]["min_score"] > E.RATES["flood"]["min_score"],
-   str([E.RATES[k]["min_score"] for k in ("calm", "normal", "busy", "flood")]))
+   > E.RATES["busy"]["min_score"] >= E.RATES["max"]["min_score"]
+   > E.RATES["flood"]["min_score"],
+   str([E.RATES[k]["min_score"]
+        for k in ("calm", "normal", "busy", "max", "flood")]))
 ok("only the firehose turns the trend check off",
-   [E.RATES[k]["require_htf"] for k in ("calm", "normal", "busy")] == [True] * 3
+   [E.RATES[k]["require_htf"]
+    for k in ("calm", "normal", "busy", "max")] == [True] * 4
    and E.RATES["flood"]["require_htf"] is False)
+
+# ---- every combination, and the venue limits it has to respect
+_pairs = E.every_pair(["1m", "5m", "15m", "1h"], 2)
+ok("every-pair puts the trend at least two rungs above the signal",
+   _pairs == [("1m", "15m"), ("1m", "1h"), ("5m", "1h")], str(_pairs))
+ok("and never pairs a period with itself or with something below it",
+   all(E._COMMON_TF.index(h) > E._COMMON_TF.index(s)
+       for s, h in E.RATES["max"]["tf_ladder"]),
+   str(len(E.RATES["max"]["tf_ladder"])) + " pairs")
+ok("the widest rate is dozens of pairs, not a handful",
+   len(E.RATES["max"]["tf_ladder"]) > 40,
+   str(len(E.RATES["max"]["tf_ladder"])))
+ok("but still only one download per period",
+   len({tf for pair in E.RATES["max"]["tf_ladder"] for tf in pair}) <= 12,
+   str(len({tf for pair in E.RATES["max"]["tf_ladder"] for tf in pair})))
+
+# a period a venue does not serve must be refused, never substituted
+for kind, tf in (("okx", "8h"), ("bybit", "8h"), ("okx", "1s"),
+                 ("bybit", "3d")):
+    threw = False
+    try:
+        E.venue_tf(kind, tf)
+    except E.Unsupported:
+        threw = True
+    ok(f"{kind} refuses {tf} rather than quietly using another chart", threw)
+ok("and the periods it does serve map to that venue's own names",
+   E.venue_tf("okx", "4h") == "4H" and E.venue_tf("bybit", "1h") == "60"
+   and E.venue_tf("binance", "8h") == "8h")
+ok("the common ladder only uses periods every venue carries",
+   all(tf in E._OKX_TF and tf in E._BYBIT_TF for tf in E._COMMON_TF),
+   str(E._COMMON_TF))
 ok("an unknown rate falls back to normal rather than crashing the run",
    E.RATE in E.RATES, E.RATE)
 ok("every timeframe the chosen ladder needs is downloaded",
