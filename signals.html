@@ -895,6 +895,8 @@ async function tickLive() {
     const px = LIVE.get(sig.symbol);
     if (!(px > 0)) continue;
     if (Math.abs(px - sig.entry)/sig.entry > 0.5) continue;   // clearly a mismatch
+    // A re-priced card is quoted at the price now, so "now" has to keep up.
+    if (repriceTick(sig, px)) continue;
     sig.price = round(px, sig.entry);
     sig.roi = +(((sig.price - sig.entry)/sig.entry)*100
               * (sig.side === "LONG" ? 1 : -1) * sig.leverage).toFixed(2);
@@ -8287,7 +8289,7 @@ const rngRaw = (k, label, val, min, max, step, suf) =>
    for a heading that had moved. A page cannot tell you it is stale, so it
    should at least tell you what it is. Read this out and it settles the
    question in one look. */
-const BUILD = "B31 · 2026-08-12 · saved setups get the fix too";
+const BUILD = "B32 · 2026-08-12 · re-priced against the live tick";
 
 function buildStamp() {
   return `<div class="hint" style="margin-top:18px;text-align:center;
@@ -9175,45 +9177,71 @@ function stampAllCoins() {
    re-priced card carries its new reward-to-risk, and one that no longer pays
    for its own risk is dropped rather than dressed up. A trade whose stop has
    already been touched is dead and is not offered at all. */
-function reprice(s) {
-  const px = s.price;
-  if (!CFG.reprice || !px || !s.targets || !s.targets.length) return s;
-  if (s.closedAt) return s;
-  const long = s.side === "LONG";
-  const stop = s.initialStop != null ? s.initialStop : s.stop;
+function repriceFrom(base, side, px) {
+  const long = side === "LONG";
+  const stop = base.stop;
+  if (!(px > 0)) return null;
   // The stop is already behind price: this is not an entry, it is a loss.
-  if (long ? px <= stop : px >= stop) return { ...s, repriceDead: true };
-
+  if (long ? px <= stop : px >= stop) return null;
   const risk = Math.abs(px - stop);
-  if (!(risk > 0)) return { ...s, repriceDead: true };
+  if (!(risk > 0)) return null;
+
   const slPct = risk / px * 100;
   const lev = Math.max(CFG.minLev,
     Math.min(CFG.maxLev, Math.floor(CFG.maxLossPct / slPct))) || CFG.minLev;
 
-  // Targets that price has already passed are gone; you cannot enter now and
-  // be paid for a move that already happened.
-  const left = s.targets.filter((t) => long ? t.price > px : t.price < px);
-  if (!left.length) return { ...s, repriceDead: true };
-
-  const targets = left.map((t, i) => ({
-    ...t, index: i + 1,
-    roi: +netRoi(Math.abs(t.price - px) / px * 100 * lev, lev).toFixed(2),
+  // Targets price has already passed are gone; you cannot enter now and be
+  // paid for a move that already happened.
+  const left = base.targets.filter((tg) => long ? tg.price > px : tg.price < px);
+  if (!left.length) return null;
+  const targets = left.map((tg, i) => ({
+    ...tg, hit: false, index: i + 1,
+    roi: +netRoi(Math.abs(tg.price - px) / px * 100 * lev, lev).toFixed(2),
   }));
-  // Reward against risk, measured to the *last* target rather than the first.
-  //
-  // The first rung is a scale-out — on the standard ladder it sits around
-  // half the distance to the stop, so gating on it would reject nearly every
-  // healthy signal. The thesis of the trade is the full move, so that is what
-  // has to pay for the risk. The first-target number is still shown, because
-  // it is what you will actually see hit first.
-  const far = targets[targets.length - 1];
-  const rr = Math.abs(far.price - px) / risk;
-  const rr1 = Math.abs(targets[0].price - px) / risk;
 
-  return { ...s, entry: round(px, px), stop: round(stop, px),
-           initialStop: round(stop, px), leverage: lev, targets,
-           roi: 0, repriced: true, rr: +rr.toFixed(2), rr1: +rr1.toFixed(2),
-           gone: s.targets.length - left.length };
+  // Reward against risk to the *last* target, not the first. The first rung
+  // is a scale-out sitting near half the distance to the stop, so gating on
+  // it would reject nearly every healthy signal. The thesis of the trade is
+  // the full move, so that is what has to pay for the risk.
+  const far = targets[targets.length - 1];
+  return {
+    entry: round(px, px), stop: round(stop, px), initialStop: round(stop, px),
+    leverage: lev, targets, roi: 0, price: round(px, px),
+    rr: +(Math.abs(far.price - px) / risk).toFixed(2),
+    rr1: +(Math.abs(targets[0].price - px) / risk).toFixed(2),
+    gone: base.targets.length - left.length,
+  };
+}
+
+function reprice(s) {
+  if (!CFG.reprice || s.closedAt || !s.targets || !s.targets.length) return s;
+  // Freshest price wins. The server's copy is up to a scan old; the ticker is
+  // six seconds old. Anchoring to the stale one is what left a few percent of
+  // phantom loss on a card that had already been re-priced.
+  const px = LIVE.get(s.symbol) || s.price;
+  const base = { stop: s.initialStop != null ? s.initialStop : s.stop,
+                 targets: s.targets.map((t) => ({ ...t })) };
+  const out = repriceFrom(base, s.side, px);
+  if (!out) return { ...s, repriceDead: true };
+  return { ...s, ...out, repriced: true, repriceBase: base };
+}
+
+/* Re-anchor an already re-priced card to the newest tick. Without this the
+   entry is frozen at whatever the price was when the scan was read, and the
+   percentage beside it starts drifting away from zero again within seconds —
+   which is the whole problem this was meant to remove. */
+function repriceTick(s, px) {
+  if (!CFG.reprice || !s.repriced || !s.repriceBase || s.closedAt) return false;
+  const out = repriceFrom(s.repriceBase, s.side, px);
+  if (!out) {
+    // Price has reached the stop, or run through every target. Stop
+    // pretending there is an entry here and let the card say so.
+    s.repriced = false;
+    s.repriceDead = true;
+    return true;
+  }
+  Object.assign(s, out);
+  return true;
 }
 
 /* Was this signal born after you started watching the coin? */
