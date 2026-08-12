@@ -808,15 +808,15 @@ MIN_CONF_ALERT = env_int("MIN_CONFIDENCE", 0)
 
 def load_state() -> dict:
     try:
-        return json.loads(STATread_text())
+        return json.loads(STATE.read_text())
     except Exception:                      # noqa: BLE001
         return {"cursor": 0, "alerted": [], "record": {}, "runs": 0}
 
 
 def save_state(s: dict) -> None:
     s["alerted"] = s.get("alerted", [])[-400:]
-    STATparent.mkdir(parents=True, exist_ok=True)
-    STATwrite_text(json.dumps(s, indent=1))
+    STATE.parent.mkdir(parents=True, exist_ok=True)
+    STATE.write_text(json.dumps(s, indent=1))
 
 
 def confidence(sig: dict) -> int:
@@ -903,7 +903,15 @@ def card(s: dict) -> str:
     return "\n".join(lines)
 
 
+# Printed as the very first line of every run. Two uploads that are both
+# 1026 lines look identical from the outside, and a run that fails on old
+# code while you are reading new code wastes an afternoon. This says which
+# build actually executed.
+BUILD = "2026-08-12 state-fix"
+
+
 def main() -> int:
+    print(f"build: {BUILD}")
     started = time.time()
     state = load_state()
     log: list[str] = []
