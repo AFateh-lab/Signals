@@ -5139,17 +5139,31 @@ function serverShownRow() {
 
   const mine = CFG.pairMode === "custom" ? new Set(mineList()) : null;
   const offList = mine ? found.filter((s) => !mine.has(s.symbol)).length : 0;
-  const byRules = Math.max(0, hidden - offList);
+  // Attributed separately, because "below your rules" was blaming the score
+  // and freshness gates for something the coin-clock did. A wrong reason sends
+  // you to the wrong switch.
+  const early = found.filter((s) => (!mine || mine.has(s.symbol))
+    && !afterYouAdded(s)).length;
+  const byRules = Math.max(0, hidden - offList - early);
   const why = [
     offList ? offList + " not on your coin list" : "",
+    early ? early + " fired before you added the coin" : "",
     byRules ? byRules + " below your rules — freshness, score, agreement or "
       + "the anti-chase gate" : "",
   ].filter(Boolean).join(", ");
 
   return kv("Shown here", shown + " of " + found.length)
-    + `<div class="hint" style="margin:-2px 0 8px">Hidden: ${why}. Loosen them
+    + `<div class="hint" style="margin:-2px 0 8px">Hidden: ${why}.</div>`
+    + (early && CFG.onlyAfterAdd ? `<button class="btn" style="margin:0 0 8px"
+        onclick="tglAfterAdd()">Show the ${early} from before I added the coin</button>
+       <div class="hint" style="margin:-2px 0 8px">They may already be part of
+        the way to their target, or already losing. Whatever they show, that
+        movement was not available to you.</div>` : "")
+    + (!CFG.onlyAfterAdd ? `<button class="btn" style="margin:0 0 8px"
+        onclick="tglAfterAdd()">Hide anything from before I added the coin</button>` : "")
+    + (byRules ? `<div class="hint" style="margin:-2px 0 8px">Loosen the rest
        under <b>How often you want signals</b>, or switch to
-       <b>Mine + biggest</b> under Coins, to see the rest.</div>`;
+       <b>Mine + biggest</b> under Coins.</div>` : "");
 }
 
 function serverBlock() {
@@ -6799,8 +6813,11 @@ function emptySignals() {
             + ", so waiting is the normal state. Deploy on Scalp or Fast for a "
             + "steady stream — more signals, individually worse."
           : " The scanner is running; nothing has fired yet.")
-      : "Showing whatever is live on " + CFG.signalTf + " candles, including "
-        + "setups that fired before you deployed."}
+      : CFG.onlyAfterAdd
+      ? "Showing only setups that fired after you added each coin. Anything "
+        + "older is hidden — the switch is on the panel above."
+      : "Showing whatever is live, including setups that fired before you "
+        + "added the coin."}
     </div>${fix}`;
 }
 
@@ -8147,7 +8164,7 @@ const rngRaw = (k, label, val, min, max, step, suf) =>
    for a heading that had moved. A page cannot tell you it is stale, so it
    should at least tell you what it is. Read this out and it settles the
    question in one look. */
-const BUILD = "B23 · 2026-08-12 · a coin starts clean";
+const BUILD = "B24 · 2026-08-12 · the switch is on the signals tab";
 
 function buildStamp() {
   return `<div class="hint" style="margin-top:18px;text-align:center;
