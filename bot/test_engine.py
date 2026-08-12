@@ -616,7 +616,39 @@ ok("a signal whose entry bar has scrolled away is kept, not dropped",
 
 # ---- the absolute freshness cap
 ok("there is an hours cap as well as a bars one",
-   E.CFG["max_age_hours"] == 48, str(E.CFG["max_age_hours"]))
+   E.CFG["max_age_hours"] == 24, str(E.CFG["max_age_hours"]))
+ok("and the book outlives it, so a published trade keeps being tracked",
+   E.CFG["book_hours"] > E.CFG["max_age_hours"],
+   f"{E.CFG['book_hours']}h book vs {E.CFG['max_age_hours']}h publish window")
+
+# ------------------------------------------- every timeframe, every strategy
+ok("the ladder covers short, medium and long",
+   E.CFG["tf_ladder"] == [("15m", "1h"), ("1h", "4h"), ("4h", "1d")],
+   str(E.CFG["tf_ladder"]))
+ok("and each timeframe is downloaded once, not once per pair",
+   E.TF_NEEDED == ["15m", "1h", "4h", "1d"], str(E.TF_NEEDED))
+
+_bars = {tf: candles(flat(120) + [100 + k * 0.6 for k in range(1, 200)])
+         for tf in E.TF_NEEDED}
+_res = E.scan_coin("LADDERUSDT", _bars)
+ok("one signal per direction survives the sweep, not one per timeframe",
+   len({(s["symbol"], s["side"]) for s in _res["open"]}) == len(_res["open"]),
+   str([(s["side"], s["stf"]) for s in _res["open"]]))
+ok("and each says which timeframe found it",
+   all(s.get("stf") in E.TF_NEEDED for s in _res["open"]),
+   str([s.get("stf") for s in _res["open"]]))
+
+# the sweep must not leave the global config pointing somewhere else
+_before = (E.CFG["signal_tf"], E.CFG["trend_tf"])
+E.scan_coin("LADDERUSDT", _bars)
+ok("the sweep puts the configured timeframe back when it is done",
+   (E.CFG["signal_tf"], E.CFG["trend_tf"]) == _before, str(_before))
+
+# a missing timeframe is skipped rather than crashing the coin
+_partial = {"1h": _bars["1h"], "4h": _bars["4h"]}
+_r2 = E.scan_coin("LADDERUSDT", _partial)
+ok("a timeframe the venue did not return is skipped, not fatal",
+   isinstance(_r2["open"], list), str(type(_r2["open"])))
 
 print()
 print(f"{len(PASS)} passed, {len(FAIL)} failed")

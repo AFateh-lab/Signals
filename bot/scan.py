@@ -396,8 +396,13 @@ def enrich(c: list[dict]) -> Series:
 CFG: dict[str, Any] = {
     "pairs": 60,
     "bars": 500,
+    # The default pair, and the ladder the sweep actually walks. Every coin
+    # is judged on all three, and the best signal per direction is kept — so a
+    # coin that only works on 15m is not missed because the app happened to be
+    # set to 4h.
     "signal_tf": "1h",
     "trend_tf": "4h",
+    "tf_ladder": [("15m", "1h"), ("1h", "4h"), ("4h", "1d")],
     "min_score": 6,
     "adx_min": 20,
     "vol_mult": 1.15,
@@ -416,7 +421,7 @@ CFG: dict[str, Any] = {
     "max_age_bars": 24,
     # An absolute ceiling, whatever the candle size. 48 bars on a 1d
     # chart is 48 days; nobody means that by "fresh".
-    "max_age_hours": 48,
+    "max_age_hours": 24,
     # How long an unresolved signal stays in the book before it is
     # dropped for age alone.
     "book_hours": 48,
@@ -1415,6 +1420,43 @@ def record_for(closed: list[dict]) -> dict[str, dict]:
     return by
 
 
+def scan_coin(sym: str, bars: dict[str, list[dict]]) -> dict:
+    """Every strategy, on every timeframe in the ladder, for one coin.
+
+    A strategy is not right or wrong in the abstract — it is right on the
+    period the coin actually moves on. Judging a coin only on whichever chart
+    period happened to be configured was the old device behaviour and it was
+    arbitrary. So the coin is the unit: run the whole set on 15m, 1h and 4h,
+    then keep the single best signal per direction.
+
+    Best means highest confidence, and ties go to the fresher one. Two
+    timeframes agreeing does not stack into a stronger signal here; that would
+    be double-counting the same price twice."""
+    all_open: list[dict] = []
+    all_closed: list[dict] = []
+    for stf, ttf in CFG["tf_ladder"]:
+        if not bars.get(stf) or not bars.get(ttf):
+            continue
+        keep_s, keep_t = CFG["signal_tf"], CFG["trend_tf"]
+        CFG["signal_tf"], CFG["trend_tf"] = stf, ttf
+        try:
+            res = scan_symbol(sym, bars[stf], bars[ttf])
+        finally:
+            CFG["signal_tf"], CFG["trend_tf"] = keep_s, keep_t
+        all_open.extend(res["open"])
+        all_closed.extend(res["closed"])
+
+    for s in all_open:
+        s["confidence"] = confidence(s)
+    best: dict[tuple[str, str], dict] = {}
+    for s in all_open:
+        k = (s["symbol"], s["side"])
+        cur = best.get(k)
+        if cur is None or (s["confidence"], s["at"]) > (cur["confidence"], cur["at"]):
+            best[k] = s
+    return {"open": list(best.values()), "closed": all_closed}
+
+
 def scan_symbol(sym: str, ltf: list[dict], htf: list[dict]) -> dict:
     """Every strategy over one coin. Returns the open signals and the resolved
     ones, so the record and the live list come from the same replay."""
@@ -1551,7 +1593,14 @@ def env_int(name: str, default: int) -> int:
         return default
 
 
-BATCH = env_int("SCAN_BATCH", 18)
+# Every timeframe the ladder needs, downloaded once per coin.
+TF_NEEDED = sorted({tf for pair in CFG["tf_ladder"] for tf in pair},
+                   key=lambda x: ("mhdw".index(x[-1]), int(x[:-1])))
+
+# Fewer coins per run than before, because each one now costs four downloads
+# instead of two. The full list is still covered in the same wall-clock time;
+# the work is just spread over more runs.
+BATCH = env_int("SCAN_BATCH", 12)
 MIN_CONF_ALERT = env_int("MIN_CONFIDENCE", 0)
 
 
@@ -1774,7 +1823,7 @@ def card(s: dict) -> str:
 # 1026 lines look identical from the outside, and a run that fails on old
 # code while you are reading new code wastes an afternoon. This says which
 # build actually executed.
-BUILD = "S2 · 2026-08-12 · ten strategies + book"
+BUILD = "S3 · 2026-08-12 · ten strategies x three timeframes"
 
 
 def main() -> int:
@@ -1859,15 +1908,22 @@ def main() -> int:
     tracked: dict[str, dict] = {}
     for sym in batch:
         try:
-            ltf = klines(sym, CFG["signal_tf"], CFG["bars"])
-            htf = klines(sym, CFG["trend_tf"], min(500, CFG["bars"]))
-            res = scan_symbol(sym, ltf, htf)
+            # One download per timeframe, reused as both the signal series and
+            # the trend filter for the pair above it. Four requests cover three
+            # complete (signal, trend) combinations — fetching each pair
+            # separately would be six.
+            bars: dict[str, list[dict]] = {}
+            for tf in TF_NEEDED:
+                bars[tf] = klines(sym, tf, CFG["bars"])
+            res = scan_coin(sym, bars)
             fresh.extend(res["open"])
             closed_all.extend(res["closed"])
-            d = enrich(ltf)
             for k, s in list(open_prev.items()):
-                if s["symbol"] == sym:
-                    tracked[k] = retrack(s, d)
+                if s["symbol"] != sym:
+                    continue
+                stf = s.get("stf") or CFG["signal_tf"]
+                if bars.get(stf):
+                    tracked[k] = retrack(s, enrich(bars[stf]))
         except Exception as e:             # noqa: BLE001
             failed.append(f"{sym}: {e}")
         time.sleep(0.15)                   # be polite to the API
@@ -1906,7 +1962,9 @@ def main() -> int:
         "book_hours": CFG["book_hours"],
         "config": {k: CFG[k] for k in
                    ("signal_tf", "trend_tf", "min_score", "min_agree",
-                    "max_age_bars", "sl_atr", "max_loss_pct", "max_lev")},
+                    "max_age_bars", "max_age_hours", "sl_atr",
+                    "max_loss_pct", "max_lev", "book_hours")},
+        "timeframes": [f"{a} / {b}" for a, b in CFG["tf_ladder"]],
         "failed": failed[:10],
         "signals": allsig[:120],
     }
