@@ -32,8 +32,7 @@ jobs:
           SMTP_PASS:      ${{ secrets.SMTP_PASS }}
           TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
-          MIN_CONFIDENCE: ${{ vars.MIN_CONFIDENCE }}
-          SCAN_BATCH:     ${{ vars.SCAN_BATCH }}
+         
         run: python bot/scan.py
 
       - name: Commit the results
