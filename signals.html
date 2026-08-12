@@ -366,6 +366,9 @@ const CFG = {
   beAfter: 2,
   cooldownBars: 8,
   maxOpen: 20,            // most recent N open signals shown
+  // Let the server do everything. On by default: all ten strategies run
+  // there now, and a page that computes nothing opens instantly.
+  viewer: true,
   autoRefreshMin: 5,
 
   // Keep scanning while the page is open, hold the screen awake, and say
@@ -5377,7 +5380,47 @@ function bookMerge(passed, live) {
 }
 
 /* --------------------------------------------------------------------- run */
+/* =========================================================================
+   VIEWER MODE — the page stops being a scanner and becomes a screen.
+
+   All ten strategies now run on the server, so there is no longer a reason
+   for a phone to download five hundred candles per coin and compute the same
+   answer more slowly. In viewer mode the page loads signals.json and draws
+   it: open it and the signals are simply there.
+
+   What you give up is honest and small: the page can only show what the last
+   server run found, so a signal is at most one scan interval old. What you
+   gain is that it costs nothing to open, works the same on a locked phone,
+   and the list no longer changes depending on how long you left the tab up.
+   ========================================================================= */
+async function viewerRun() {
+  await loadServer();
+  const only = CFG.pairMode === "custom" ? new Set(mineList()) : null;
+  const now = Date.now();
+  // The server applies its own rules before publishing. These are yours,
+  // applied again on top — otherwise switching to viewer mode would silently
+  // disconnect every control on the Settings screen from what you see.
+  const list = serverSignals().filter((s) => {
+    if (only && !only.has(s.symbol)) return false;
+    if (CFG.modGate && (s.confidence || 0) < CFG.modGate) return false;
+    if (CFG.maxAgeBars) {
+      const mins = BARMIN[s.stf || CFG.signalTf] || 60;
+      if (now - s.at > CFG.maxAgeBars * mins * 60000) return false;
+    }
+    if (CFG.chaseOn && s.chase && s.chase.verdict === "late") return false;
+    if (CFG.minAgree && s.agree != null && s.agree < CFG.minAgree) return false;
+    return true;
+  });
+  list.sort((a, b) => (b.confidence || 0) - (a.confidence || 0) || b.at - a.at);
+  OPEN = list.slice(0, CFG.maxOpen);
+  CLOSED = [];
+  LASTRUN = Date.now();
+  setDot(SERVER.err ? "bad" : "");
+  render(true);
+}
+
 async function run() {
+  if (CFG.viewer) { await viewerRun(); return; }
   if (BUSY) return;
   BUSY = true; ERROR = null; SCANNED = 0; FAILED = 0; setDot("busy");
   DROP = {old:0, agree:0, dup:0, capped:0, stale:0, weak:0, before:0,
@@ -6202,7 +6245,9 @@ function pill(s) {
   if (s.status==="breakeven") return '<span class="pill flat">Breakeven</span>';
   if (s.status==="completed") return '<span class="pill done">Sold — all targets &#10003;</span>';
   if (s.hits) return `<span class="pill tgt">${s.closedAt ? "Sold at" : "Took"} Target ${s.hits} &#10003;</span>`;
-  return '<span class="pill prog">In progress</span>';
+  // "In progress" read as though the app thought you were in the trade. It
+  // only ever meant the setup is still alive and unresolved.
+  return '<span class="pill prog">Live &middot; not taken</span>';
 }
 
 /* Which bot found it — and, when several found the same thing, that they
@@ -7371,7 +7416,7 @@ const EXPORT_KEYS = [
   "alwaysOn","notify","sound","autoRefreshMin","sinceDeploy","dualScan",
   "onConflict",
   "minWinRate","minRecord","liveOnly","botsPerScan","botBtPairs","botBtBars",
-  "keepSignals","bookHours",
+  "keepSignals","bookHours","viewer",
   "sweepOn","sweepCoins","sweepBars","sweepStrats",
   "matrixCoins","matrixBars","matrixTop","matrixAuto","matrixEveryMin",
   "evoAuto","evoEveryHours","modOff","modGate",
@@ -7947,6 +7992,19 @@ function autoPanel() {
       writes <b>signals.json</b> beside this page, so scanning carries on with
       your phone locked. Those signals go through the same filters as the ones
       found here and are marked <b>found while away</b>.</div>
+    <div class="status" style="margin-top:8px">
+      <div class="kv"><span class="k">Let the server do everything</span>
+        <button class="sw${CFG.viewer ? " on" : ""}"
+          onclick="setViewer(!CFG.viewer)"></button></div>
+    </div>
+    <div class="hint">${CFG.viewer
+      ? "On — this page computes nothing. It opens instantly and shows what "
+        + "the server found, the same on any device. All ten strategies run "
+        + "there, so nothing is lost by not scanning here."
+      : "Off — this device downloads candles and runs the strategies itself "
+        + "every " + CFG.autoRefreshMin + " minutes while the page is open. "
+        + "Slower to open and heavier on battery, and it stops the moment the "
+        + "tab is hidden."}</div>
     <h2>Whale engine</h2>
     <div class="status">
       <div class="kv"><span class="k">Read large-trader flow</span>
@@ -7987,7 +8045,7 @@ const rngRaw = (k, label, val, min, max, step, suf) =>
    for a heading that had moved. A page cannot tell you it is stale, so it
    should at least tell you what it is. Read this out and it settles the
    question in one look. */
-const BUILD = "B15 · 2026-08-12 · top 50/100";
+const BUILD = "B16 · 2026-08-12 · viewer + server book";
 
 function buildStamp() {
   return `<div class="hint" style="margin-top:18px;text-align:center;
@@ -8908,6 +8966,19 @@ function setCoinSource(k) {
 function setPairMode(m) {
   CFG.pairMode = m; writeHash(); render();
   if (m === "volume" || CFG.custom.length) run();
+}
+
+function setViewer(on) {
+  CFG.viewer = !!on;
+  if (on) {
+    SERVER.on = true;          // viewing nothing would be an odd thing to ask
+    BOOK.clear(); HELD.clear(); saveBook();
+    // Everything on screen was computed here; from now on it comes from the
+    // server. Keeping the old cards would mix two engines in one list.
+    OPEN = []; CLOSED = [];
+  }
+  writeHash(); render(true); refresh();
+  toast(on ? "The server does the scanning now" : "This device scans again");
 }
 
 function setStr(k, v) { CFG[k] = v; render(); rescore(); }
@@ -11748,6 +11819,13 @@ setInterval(()=>{
   if (document.visibilityState !== "visible") return;
   // The one switch. Off means off — no scanning, no searching, nothing.
   if (!ENGINE.on && !CFG.alwaysOn) return;
+  // In viewer mode there is nothing heavy to schedule — just re-read what the
+  // server wrote. Two minutes, because the server itself only runs every
+  // fifteen and polling faster would just be asking the same question again.
+  if (CFG.viewer) {
+    if (Date.now() - LASTRUN > 120000) viewerRun();
+    return;
+  }
   if (Date.now()-LASTRUN > CFG.autoRefreshMin*60000) refresh();
 }, 5000);
 
