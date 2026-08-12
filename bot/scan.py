@@ -1663,18 +1663,28 @@ RATES: dict[str, dict[str, Any]] = {
     "normal": {"tf_ladder": [("15m", "1h"), ("1h", "4h"), ("4h", "1d")],
                "min_score": 6, "min_agree": 2, "require_htf": True,
                "adx_min": 20},
-    # Adds the 5-minute chart and drops the agreement floor to one. Expect
-    # several an hour on a wide coin list, and expect more of them to fail.
-    "busy": {"tf_ladder": [("5m", "15m"), ("15m", "1h"), ("1h", "4h"),
-                           ("4h", "1d")],
+    # Eight periods rather than three, and the agreement floor down to one.
+    #
+    # More rungs is the honest way to find more: a coin that does nothing on
+    # 15m may be setting up cleanly on 30m, and checking only three periods
+    # was leaving those unseen. It costs one extra download per coin per
+    # timeframe, which is why it is not the default.
+    #
+    # What it does not do is multiply the count: the sweep still keeps one
+    # signal per coin and direction, so extra rungs raise the chance of
+    # finding something on a given coin rather than stacking five versions of
+    # the same idea.
+    "busy": {"tf_ladder": [("5m", "15m"), ("15m", "1h"), ("30m", "2h"),
+                           ("1h", "4h"), ("2h", "8h"), ("4h", "1d")],
              "min_score": 5, "min_agree": 1, "require_htf": True,
              "adx_min": 18},
     # Everything the strategies can see, with the higher-timeframe check off.
     # This is a firehose and a bad way to trade; it is here because seeing the
     # raw output is sometimes the fastest way to understand what the thing
     # does.
-    "flood": {"tf_ladder": [("5m", "15m"), ("15m", "1h"), ("1h", "4h"),
-                            ("4h", "1d")],
+    "flood": {"tf_ladder": [("5m", "15m"), ("15m", "1h"), ("30m", "2h"),
+                            ("1h", "4h"), ("2h", "8h"), ("4h", "1d"),
+                            ("6h", "1d"), ("12h", "1w")],
               "min_score": 4, "min_agree": 0, "require_htf": False,
               "adx_min": 15},
 }
@@ -1914,7 +1924,7 @@ def card(s: dict) -> str:
 # 1026 lines look identical from the outside, and a run that fails on old
 # code while you are reading new code wastes an afternoon. This says which
 # build actually executed.
-BUILD = "S6 · 2026-08-12 · SCAN_RATE"
+BUILD = "S8 · 2026-08-12 · wider ladders + pipeline"
 
 
 def main() -> int:

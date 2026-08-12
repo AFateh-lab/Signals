@@ -753,11 +753,18 @@ _pipe_htf = recent([250 - i * 0.4 for i in range(400)], 14_400_000)
 _pr = E.scan_symbol("PIPEUSDT", _pipe_ltf, _pipe_htf)
 ok("a scan returns a pending list as well as open and closed",
    isinstance(_pr.get("pending"), list), str(type(_pr.get("pending"))))
-ok("and it is not empty when a setup is genuinely one gate away",
-   len(_pr["pending"]) > 0, f"{len(_pr['pending'])} waiting")
+# On the "flood" rate there are no gates left to be blocked by, so an empty
+# queue is the correct answer rather than a missing feature. Any rate that
+# does gate anything must actually find something.
+_gated = E.CFG["require_htf"] or E.CFG["min_agree"]
+ok("it is not empty when a setup is genuinely one gate away",
+   bool(_pr["pending"]) or not _gated,
+   f"{len(_pr['pending'])} waiting, rate={E.RATE}")
 ok("every pending entry says what it is waiting for",
-   bool(_pr["pending"]) and all(x.get("waiting_for") for x in _pr["pending"]),
+   all(x.get("waiting_for") for x in _pr["pending"]),
    str([x.get("waiting_for") for x in _pr["pending"]][:2]))
+ok("and a rate with no gates queues nothing, rather than queueing everything",
+   _gated or not _pr["pending"], f"rate={E.RATE}, {len(_pr['pending'])}")
 ok("and is marked so nothing downstream mistakes it for a signal",
    all(x.get("pending") is True for x in _pr["pending"]))
 ok("nothing is both open and pending",

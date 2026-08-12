@@ -351,13 +351,18 @@ const CFG = {
   coinSince: {},
   onlyAfterAdd: true,
   // Re-price a still-valid signal at what it costs now, rather than showing
-  // an entry nobody can get any more. Off by default: it changes every
-  // number on the card, and that should be a choice you made.
-  reprice: false,
-  // A re-priced trade has to still pay for its own risk. Below this, the
-  // first target is closer than the stop and the trade is not worth taking
-  // however good the direction looks.
-  repriceMinRR: 1.0,
+  // an entry nobody can get any more.
+  //
+  // On by default. The old entry is a price that no longer exists, and the
+  // percentage beside it describes a trade nobody took — which is worse than
+  // useless when the direction may still be right. Sometimes re-pricing makes
+  // a trade look better (price moved against the signal, so you get in
+  // cheaper) and sometimes worse; both are the truth about entering now.
+  reprice: true,
+  // A re-priced trade has to still pay for its own risk, measured to the
+  // final target. Below this the whole move is worth less than what you are
+  // risking to get it, however good the direction looks.
+  repriceMinRR: 1.5,
   signalTf: "1h",
   trendTf: "4h",
   bars: 500,
@@ -6611,7 +6616,8 @@ function card(s, i) {
       s.chase.retest ? " · wait for a retest near <b>" + s.chase.retest + "</b>"
       : ""}</div>` : ""}
     ${s.repriced ? `<div class="why" style="color:#8ff0c0">Re-priced at the
-      price now &middot; reward:risk <b>${s.rr}</b> to the first target${
+      price now &middot; reward:risk <b>${s.rr}</b> to the final target,
+      <b>${s.rr1}</b> to the first${
       s.gone ? " &middot; " + s.gone + " target"
         + (s.gone === 1 ? "" : "s") + " already passed" : ""}</div>` : ""}
     <div class="prices"><span>Entry Price: <b>${s.entry}</b></span>
@@ -6852,7 +6858,19 @@ function emptySignals() {
       higher share of them wrong — that is the trade, and it is the right one
       while you are still learning what this thing does.</div>`;
 
-  const why = bits.length
+  // In viewer mode the device scanned nothing, so DROP is empty and
+  // CFG.signalTf is whatever this screen happens to be set to — neither
+  // describes what actually happened. The server's own numbers do.
+  const j = SERVER.data;
+  const why = CFG.viewer
+    ? (j
+        ? `The server looked at <b>${j.universe || "?"}</b> coins across
+           <b>${(j.timeframes || []).join("</b>, <b>") || "several"}</b> with
+           all ten strategies, and found <b>${(j.signals || []).length}</b>
+           live setups. None of them survived the filters on this screen —
+           the panel above says which filter, and how many each one took.`
+        : "Waiting for the first server scan.")
+    : bits.length
     ? `The scan found <b>${DROP.total}</b> unresolved setups across
        ${UNIVERSE.length||CFG.pairs} pairs, and every one was filtered out:
        <br>· ${bits.join("<br>· ")}`
@@ -8251,7 +8269,7 @@ const rngRaw = (k, label, val, min, max, step, suf) =>
    for a heading that had moved. A page cannot tell you it is stale, so it
    should at least tell you what it is. Read this out and it settles the
    question in one look. */
-const BUILD = "B28 · 2026-08-12 · the pipeline";
+const BUILD = "B30 · 2026-08-12 · re-priced by default";
 
 function buildStamp() {
   return `<div class="hint" style="margin-top:18px;text-align:center;
@@ -9163,11 +9181,20 @@ function reprice(s) {
     ...t, index: i + 1,
     roi: +netRoi(Math.abs(t.price - px) / px * 100 * lev, lev).toFixed(2),
   }));
-  const rr = Math.abs(targets[0].price - px) / risk;
+  // Reward against risk, measured to the *last* target rather than the first.
+  //
+  // The first rung is a scale-out — on the standard ladder it sits around
+  // half the distance to the stop, so gating on it would reject nearly every
+  // healthy signal. The thesis of the trade is the full move, so that is what
+  // has to pay for the risk. The first-target number is still shown, because
+  // it is what you will actually see hit first.
+  const far = targets[targets.length - 1];
+  const rr = Math.abs(far.price - px) / risk;
+  const rr1 = Math.abs(targets[0].price - px) / risk;
 
   return { ...s, entry: round(px, px), stop: round(stop, px),
            initialStop: round(stop, px), leverage: lev, targets,
-           roi: 0, repriced: true, rr: +rr.toFixed(2),
+           roi: 0, repriced: true, rr: +rr.toFixed(2), rr1: +rr1.toFixed(2),
            gone: s.targets.length - left.length };
 }
 
