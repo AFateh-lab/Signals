@@ -15,59 +15,207 @@ from __future__ import annotations
 
 import math
 import time
+import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field, asdict
 from typing import Any
 
-FAPI = "https://fapi.binance.com"
 UA = {"User-Agent": "signals-bot/1.0 (+github actions)"}
+
+# Binance answers a GitHub Actions runner with 451 Unavailable For Legal
+# Reasons — the runners live in Microsoft datacentres, and Binance blocks
+# those ranges regardless of who is asking. The same code that works fine
+# from a phone dies in five seconds on the server. So the data layer tries
+# several venues and uses whichever one answers, rather than assuming one.
+#
+# The order matters: Binance first because it is what the page in your hand
+# uses, so server and phone agree whenever Binance is reachable. Bybit and
+# OKX are the fallbacks, and both carry the same USDT perpetuals.
+SOURCES = [
+    ("binance", "https://fapi.binance.com"),
+    ("binance", "https://fapi1.binance.com"),
+    ("bybit",   "https://api.bybit.com"),
+    ("okx",     "https://www.okx.com"),
+]
+
+# Resolved once per run, then reused. Re-probing every venue on every call
+# would multiply a 12-minute budget by four.
+SOURCE: tuple[str, str] | None = None
+# Probing a venue means asking it for the ticker list, which is the same
+# call the run needs next. Keeping it saves a duplicate round trip.
+_FIRST_TICKERS: list[dict] | None = None
+
+
+class Blocked(Exception):
+    """The venue answered, but not with data — geo-block, ban, or outage."""
 
 
 # --------------------------------------------------------------------- data
 
 def get_json(url: str, tries: int = 3) -> Any:
-    """One request, with a couple of retries. Binance rate-limits by weight,
-    and a scheduled job that hammers it on failure gets banned rather than
-    fixed, so the backoff is deliberate."""
+    """One request, with a couple of retries. Exchanges rate-limit by weight,
+    and a scheduled job that hammers one on failure gets banned rather than
+    fixed, so the backoff is deliberate.
+
+    A 4xx is not retried. A geo-block does not become un-blocked by asking
+    again nine seconds later; retrying it only burns the run's time budget
+    before the fallback venue gets a turn."""
+    import json
     last = None
     for attempt in range(tries):
         try:
             req = urllib.request.Request(url, headers=UA)
             with urllib.request.urlopen(req, timeout=25) as r:
-                import json
                 return json.loads(r.read().decode())
+        except urllib.error.HTTPError as e:
+            if 400 <= e.code < 500:
+                raise Blocked(f"HTTP {e.code} from {url.split('/')[2]}") from e
+            last = e
+            time.sleep(1.5 * (attempt + 1))
         except Exception as e:            # noqa: BLE001 - any failure retries
             last = e
             time.sleep(1.5 * (attempt + 1))
-    raise RuntimeError(f"failed after {tries}: {last}")
+    raise Blocked(f"failed after {tries}: {last}")
 
 
-def klines(symbol: str, interval: str, limit: int = 500) -> list[dict]:
-    q = urllib.parse.urlencode(
-        {"symbol": symbol, "interval": interval, "limit": limit})
-    rows = get_json(f"{FAPI}/fapi/v1/klines?{q}")
+# Every venue names its timeframes differently. Only these two are used.
+_BYBIT_TF = {"1m": "1", "5m": "5", "15m": "15", "30m": "30", "1h": "60",
+             "2h": "120", "4h": "240", "6h": "360", "12h": "720",
+             "1d": "D", "1w": "W"}
+_OKX_TF = {"1m": "1m", "5m": "5m", "15m": "15m", "30m": "30m", "1h": "1H",
+           "2h": "2H", "4h": "4H", "6h": "6H", "12h": "12H", "1d": "1D",
+           "1w": "1W"}
+
+
+def _okx_inst(symbol: str) -> str:
+    """BTCUSDT -> BTC-USDT-SWAP."""
+    return symbol[:-4] + "-USDT-SWAP"
+
+
+def _klines_from(kind: str, host: str, symbol: str, interval: str,
+                 limit: int) -> list[dict]:
+    if kind == "binance":
+        q = urllib.parse.urlencode(
+            {"symbol": symbol, "interval": interval, "limit": limit})
+        rows = get_json(f"{host}/fapi/v1/klines?{q}")
+        return [{"t": int(r[0]), "o": float(r[1]), "h": float(r[2]),
+                 "l": float(r[3]), "c": float(r[4]), "v": float(r[5])}
+                for r in rows]
+
+    if kind == "bybit":
+        q = urllib.parse.urlencode({
+            "category": "linear", "symbol": symbol,
+            "interval": _BYBIT_TF.get(interval, "60"),
+            "limit": min(limit, 1000)})
+        d = get_json(f"{host}/v5/market/kline?{q}")
+        rows = (d.get("result") or {}).get("list") or []
+        # Bybit hands back newest-first. Every indicator here walks forward
+        # in time, so a reversed list would compute the whole thing
+        # backwards and still look plausible.
+        rows = list(reversed(rows))
+        return [{"t": int(r[0]), "o": float(r[1]), "h": float(r[2]),
+                 "l": float(r[3]), "c": float(r[4]), "v": float(r[5])}
+                for r in rows]
+
+    q = urllib.parse.urlencode({
+        "instId": _okx_inst(symbol), "bar": _OKX_TF.get(interval, "1H"),
+        "limit": min(limit, 300)})
+    d = get_json(f"{host}/api/v5/market/candles?{q}")
+    rows = list(reversed(d.get("data") or []))          # newest-first too
     return [{"t": int(r[0]), "o": float(r[1]), "h": float(r[2]),
              "l": float(r[3]), "c": float(r[4]), "v": float(r[5])}
             for r in rows]
 
 
-def tickers() -> list[dict]:
-    rows = get_json(f"{FAPI}/fapi/v1/ticker/24hr")
+def _tickers_from(kind: str, host: str) -> list[dict]:
     out = []
-    for r in rows:
-        sym = r.get("symbol", "")
-        if not sym.endswith("USDT"):
-            continue
-        try:
-            out.append({"symbol": sym,
-                        "vol": float(r["quoteVolume"]),
-                        "price": float(r["lastPrice"]),
-                        "change": float(r["priceChangePercent"])})
-        except (KeyError, ValueError):
-            continue
+    if kind == "binance":
+        rows = get_json(f"{host}/fapi/v1/ticker/24hr")
+        for r in rows:
+            sym = r.get("symbol", "")
+            if not sym.endswith("USDT"):
+                continue
+            try:
+                out.append({"symbol": sym,
+                            "vol": float(r["quoteVolume"]),
+                            "price": float(r["lastPrice"]),
+                            "change": float(r["priceChangePercent"])})
+            except (KeyError, ValueError):
+                continue
+
+    elif kind == "bybit":
+        d = get_json(f"{host}/v5/market/tickers?category=linear")
+        for r in (d.get("result") or {}).get("list") or []:
+            sym = r.get("symbol", "")
+            if not sym.endswith("USDT"):
+                continue
+            try:
+                out.append({"symbol": sym,
+                            "vol": float(r["turnover24h"]),
+                            "price": float(r["lastPrice"]),
+                            # Bybit gives a fraction, Binance gives percent.
+                            # Mixing the two would make every coin look flat.
+                            "change": float(r["price24hPcnt"]) * 100})
+            except (KeyError, ValueError):
+                continue
+
+    else:
+        d = get_json(f"{host}/api/v5/market/tickers?instType=SWAP")
+        for r in d.get("data") or []:
+            inst = r.get("instId", "")
+            if not inst.endswith("-USDT-SWAP"):
+                continue
+            try:
+                last = float(r["last"])
+                open24 = float(r.get("open24h") or 0) or last
+                out.append({"symbol": inst.split("-")[0] + "USDT",
+                            "vol": float(r.get("volCcy24h") or 0) * last,
+                            "price": last,
+                            "change": (last - open24) / open24 * 100})
+            except (KeyError, ValueError, ZeroDivisionError):
+                continue
+
     out.sort(key=lambda x: -x["vol"])
     return out
+
+
+def pick_source() -> tuple[str, str]:
+    """Find a venue that will actually talk to us, once, at the top of a run.
+
+    A venue that returns an empty list counts as a failure. A geo-block that
+    answers 200 with `[]` would otherwise be indistinguishable from a quiet
+    market, and the run would write an empty file over a good one."""
+    global SOURCE, _FIRST_TICKERS
+    if SOURCE:
+        return SOURCE
+    problems = []
+    for kind, host in SOURCES:
+        try:
+            rows = _tickers_from(kind, host)
+            if len(rows) >= 20:
+                SOURCE = (kind, host)
+                _FIRST_TICKERS = rows
+                print(f"data source: {kind} ({host})")
+                return SOURCE
+            problems.append(f"{host}: only {len(rows)} pairs")
+        except Exception as e:            # noqa: BLE001
+            problems.append(f"{host}: {e}")
+    raise RuntimeError("no exchange would answer — " + "; ".join(problems))
+
+
+def klines(symbol: str, interval: str, limit: int = 500) -> list[dict]:
+    kind, host = pick_source()
+    return _klines_from(kind, host, symbol, interval, limit)
+
+
+def tickers() -> list[dict]:
+    global _FIRST_TICKERS
+    kind, host = pick_source()
+    if _FIRST_TICKERS is not None:
+        out, _FIRST_TICKERS = _FIRST_TICKERS, None
+        return out
+    return _tickers_from(kind, host)
 
 
 # --------------------------------------------------------------- indicators
@@ -634,8 +782,28 @@ STATE = ROOT / "bot" / "state.json"
 # everything gets killed halfway and writes nothing; one that does a slice
 # every fifteen minutes covers the whole list within the hour and always
 # leaves a complete file behind.
-BATCH = int(os.environ.get("SCAN_BATCH", "18"))
-MIN_CONF_ALERT = int(os.environ.get("MIN_CONFIDENCE", "0"))
+def env_int(name: str, default: int) -> int:
+    """A number from the environment, or the default.
+
+    `os.environ.get(name, "18")` is not enough here. A workflow that maps
+    `SCAN_BATCH: ${{ vars.SCAN_BATCH }}` with the variable unset does not
+    leave the variable out — it sets it to the empty string. So the default
+    never fires, `int("")` raises, and the job dies on line one before it
+    has looked at a single candle. Anything unreadable falls back rather
+    than crashing: a typo in an optional tuning knob should not stop the
+    scan."""
+    raw = (os.environ.get(name) or "").strip()
+    if not raw:
+        return default
+    try:
+        return int(float(raw))
+    except ValueError:
+        print(f"{name}={raw!r} is not a number — using {default}")
+        return default
+
+
+BATCH = env_int("SCAN_BATCH", 18)
+MIN_CONF_ALERT = env_int("MIN_CONFIDENCE", 0)
 
 
 def load_state() -> dict:
@@ -679,7 +847,7 @@ def send_email(subject: str, body: str) -> str:
     msg["From"] = user
     msg["To"] = to
     msg.set_content(body)
-    port = int(os.environ.get("SMTP_PORT", "465"))
+    port = env_int("SMTP_PORT", 465)
     ctx = ssl.create_default_context()
     with smtplib.SMTP_SSL(host, port, context=ctx, timeout=30) as s:
         s.login(user, pw)
@@ -740,7 +908,15 @@ def main() -> int:
     state = load_state()
     log: list[str] = []
 
-    tk = tickers()
+    try:
+        tk = tickers()
+    except Exception as e:                 # noqa: BLE001
+        # Say which venues refused and why, rather than a traceback. Almost
+        # every failure here is a geo-block, and the message should read as
+        # one instead of as a bug in the maths.
+        print(f"could not reach any exchange: {e}")
+        print("leaving the last signals.json alone")
+        return 1
     if not tk:
         print("no ticker data; leaving the last file alone")
         return 1
