@@ -1774,7 +1774,7 @@ def card(s: dict) -> str:
 # 1026 lines look identical from the outside, and a run that fails on old
 # code while you are reading new code wastes an afternoon. This says which
 # build actually executed.
-BUILD = "2026-08-12 top-n"
+BUILD = "S2 · 2026-08-12 · ten strategies + book"
 
 
 def main() -> int:
