@@ -650,6 +650,52 @@ _r2 = E.scan_coin("LADDERUSDT", _partial)
 ok("a timeframe the venue did not return is skipped, not fatal",
    isinstance(_r2["open"], list), str(type(_r2["open"])))
 
+# ------------------------------------------- two writers, one branch
+#
+# A rebase cannot merge two JSON documents. It tried, put a conflict marker in
+# the middle of a signal, and failed the job. The merge has to happen where
+# the documents mean something.
+
+import json as _json                        # noqa: E402
+
+_md = _pl.Path(_tf.mkdtemp())
+_ko, _ks = E.OUT, E.STATE
+E.OUT, E.STATE = _md / "signals.json", _md / "state.json"
+try:
+    def _sig(sym, conf=50, at=1000, side="LONG"):
+        return {"symbol": sym, "side": side, "at": at, "strat": "c",
+                "confidence": conf, "entry": 100, "stop": 98, "targets": []}
+
+    E.OUT.write_text(_json.dumps({"generated": 111, "scanned": ["CUSDT"],
+        "signals": [_sig("CUSDT"), _sig("AUSDT", conf=1)]}))
+    E.STATE.write_text(_json.dumps({"runs": 9, "cursor": 5}))
+    _mine = _md / "mine.json"
+    _mine.write_text(_json.dumps({"generated": 222, "scanned": ["AUSDT", "BUSDT"],
+        "signals": [_sig("AUSDT", conf=90), _sig("BUSDT")]}))
+    _mst = _md / "mystate.json"
+    _mst.write_text(_json.dumps({"runs": 7, "cursor": 2}))
+
+    E.merge_published(str(_mine), str(_mst))
+    _out = _json.loads(E.OUT.read_text())
+    _got = dict((s["symbol"], s["confidence"]) for s in _out["signals"])
+    ok("the other writer's coins survive the merge", "CUSDT" in _got, str(_got))
+    ok("this run's own finds survive it too", "BUSDT" in _got, str(_got))
+    ok("and where both have the same signal, the freshly tracked one wins",
+       _got.get("AUSDT") == 90, str(_got))
+    _st = _json.loads(E.STATE.read_text())
+    ok("the run counter moves past whatever the other writer reached",
+       _st["runs"] == 10, str(_st))
+    ok("but this run keeps its own cursor, so coverage does not jump",
+       _st["cursor"] == 2, str(_st))
+
+    # merging against nothing at all must not throw
+    E.OUT.unlink()
+    E.merge_published(str(_mine), str(_mst))
+    ok("merging into an empty branch works",
+       len(_json.loads(E.OUT.read_text())["signals"]) == 2)
+finally:
+    E.OUT, E.STATE = _ko, _ks
+
 print()
 print(f"{len(PASS)} passed, {len(FAIL)} failed")
 if FAIL:

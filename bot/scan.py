@@ -1823,7 +1823,7 @@ def card(s: dict) -> str:
 # 1026 lines look identical from the outside, and a run that fails on old
 # code while you are reading new code wastes an afternoon. This says which
 # build actually executed.
-BUILD = "S3 · 2026-08-12 · ten strategies x three timeframes"
+BUILD = "S4 · 2026-08-12 · concurrent writes merged"
 
 
 def main() -> int:
@@ -2006,5 +2006,65 @@ def main() -> int:
     return 0
 
 
+def merge_published(mine_path: str, mystate_path: str) -> int:
+    """Fold this run's results into whatever is on the branch now.
+
+    Two writers can land between one run reading signals.json and the same run
+    pushing it: a second scan, or you uploading a file. Git then tries to
+    rebase two JSON documents line by line, which is not a thing that can
+    work — it produced a conflict marker in the middle of a signal and failed
+    the job.
+
+    So the merge happens here, where the documents mean something. Both books
+    are unioned by signal key; where the same signal exists in both, this
+    run's copy wins because it was tracked against newer candles. Nobody's
+    findings are discarded, which is the part a `git checkout --ours` would
+    have got wrong."""
+    mine = json.loads(pathlib.Path(mine_path).read_text())
+    try:
+        theirs = json.loads(OUT.read_text())
+    except Exception:                      # noqa: BLE001 - nothing there yet
+        theirs = {"signals": []}
+
+    book: dict[str, dict] = {}
+    for s in theirs.get("signals", []):
+        book[sig_key(s)] = s
+    replaced = 0
+    for s in mine.get("signals", []):
+        k = sig_key(s)
+        if k in book:
+            replaced += 1
+        book[k] = s
+
+    # A coin this run did not look at keeps whatever the other writer said
+    # about it; a coin it did look at is described by this run alone.
+    scanned = set(mine.get("scanned", []))
+    live = [s for s in book.values()
+            if s["symbol"] not in scanned
+            or sig_key(s) in {sig_key(x) for x in mine.get("signals", [])}]
+    live.sort(key=lambda x: (-x.get("confidence", 0), -x["at"]))
+
+    out = dict(mine)
+    out["signals"] = live[:200]
+    out["merged_with"] = theirs.get("generated")
+    OUT.write_text(json.dumps(out, indent=1))
+
+    # State is a counter and a cursor; the higher run count is the later one.
+    try:
+        ours_st = json.loads(pathlib.Path(mystate_path).read_text())
+        theirs_st = json.loads(STATE.read_text())
+        if theirs_st.get("runs", 0) > ours_st.get("runs", 0):
+            ours_st["runs"] = theirs_st["runs"] + 1
+        STATE.write_text(json.dumps(ours_st, indent=1))
+    except Exception as e:                 # noqa: BLE001
+        print(f"state merge skipped: {e}")
+
+    print(f"merged: {len(live)} live "
+          f"({replaced} updated, {len(theirs.get('signals', []))} were there)")
+    return 0
+
+
 if __name__ == "__main__":
+    if len(sys.argv) > 3 and sys.argv[1] == "--merge":
+        raise SystemExit(merge_published(sys.argv[2], sys.argv[3]))
     raise SystemExit(main())
