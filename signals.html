@@ -344,7 +344,7 @@ const CFG = {
   signalTf: "1h",
   trendTf: "4h",
   bars: 500,
-  minScore: 6,
+  minScore: 5,          // 6 stacked with everything else was a wall
   requireHtf: true,
   adxMin: 20,
   rsiLong: [45, 72], rsiShort: [28, 55],
@@ -420,7 +420,7 @@ const CFG = {
   // Off by default. Filling a short list with setups that failed the filters
   // does not give you more signals, it gives you the ones the rules already
   // rejected — and they are the ones that lose.
-  minShow: 0,
+  minShow: 4,           // never a bare list: top up and label why
 
   // "volume" ranks the universe by turnover, "movement" by how far coins
   // actually travelled in the last day. A strategy that needs a move to reach
@@ -441,7 +441,7 @@ const CFG = {
   // How recently a setup must have fired to still count as tradable, in
   // candles of the signal timeframe. 24 on 1h candles means the last day;
   // the same 24 on 5m candles means the last two hours. 0 turns it off.
-  maxAgeBars: 24,
+  maxAgeBars: 48,
 
   // Support & Resistance. Swing pivots are clustered into price zones; the
   // strategy trades rejections off them and decisive breaks through them.
@@ -491,8 +491,8 @@ const CFG = {
 
   // Anti-chase
   chaseOn: true,
-  chaseWarnR: 0.5,         // past this much R, suggest waiting for a retest
-  chaseMaxR: 1.2,          // past this, the trade is gone
+  chaseWarnR: 0.8,         // past this much R, suggest waiting for a retest
+  chaseMaxR: 2.0,          // past this, the trade is gone
   chaseVwapBars: 40,
   chaseVwapAtr: 2.5,       // ATR above VWAP that counts as stretched
   chaseExtAtr: 6,          // how far a leg can run before it is extended
@@ -521,6 +521,15 @@ const CFG = {
 
   modOff: [],              // modules the user has switched off
   modGate: 0,               // confidence a signal must reach, 0 = off
+
+  keepSignals: true,       // a published signal stays until it resolves
+  bookHours: 48,           // how long an unresolved one is kept before clutter
+
+  // Per-coin sweep: every interval, one coin at a time
+  sweepOn: true,
+  sweepCoins: 3,           // coins swept per scan
+  sweepBars: 400,          // candles per interval (kept low: ten of them)
+  sweepStrats: [],         // empty = the fast four
 
   matrixAuto: true,        // keep scoring cells in the background
   matrixEveryMin: 12,      // how often the next few coins get scored
@@ -642,7 +651,8 @@ function saveSession() {
 }
 function resetSession() {
   SESSION.startedAt = Date.now(); SESSION.scans = 0;
-  ARCHIVE.clear(); HELD.clear(); OPEN = []; CLOSED = []; FEED = [];
+  ARCHIVE.clear(); HELD.clear(); BOOK.clear(); saveBook();
+  OPEN = []; CLOSED = []; FEED = [];
   saveSession();
   toast("Reset — tracking from right now");
   render(true);
@@ -2712,6 +2722,10 @@ function loadBots() {
     b.on = true;
     b.follow = true;               // the live settings, deploy and all
     b.name = "Main";
+    // Start its clock a day back. A bot whose clock begins now hides every
+    // signal until something fresh fires, which on a 4h chart is most of a
+    // day of an empty screen and no way to tell that from a broken app.
+    b.startedAt = Date.now() - 86400000;
     BOTS = [b];
   }
 }
@@ -4939,6 +4953,342 @@ function coherenceOf(sig) {
            split: hi + " for · " + lo + " against" };
 }
 
+/* =========================================================================
+   WHAT THE SERVER FOUND WHILE YOU WERE AWAY
+
+   A phone cannot scan in the background — iOS suspends the page the moment
+   Safari leaves the screen, and no amount of cleverness in here changes that.
+   So a copy of the engine runs on GitHub's servers every fifteen minutes and
+   writes signals.json next to this file. The page reads it on open and merges
+   it in, labelled, so what you see is everything found since you last looked
+   rather than only what this device managed to catch.
+
+   The server runs six of the ten strategies. It says so in the file, and the
+   panel says so on screen — a missing strategy that nobody mentions is how a
+   list quietly becomes less than it claims to be.
+   ========================================================================= */
+
+const SERVER = { at: 0, data: null, err: null, loading: false, on: true };
+
+async function loadServer() {
+  if (!SERVER.on || SERVER.loading) return;
+  // Opened straight from a file rather than served over the web: the browser
+  // blocks the fetch, and the console error looks like a fault when it is
+  // simply the wrong way to open the page.
+  if (location.protocol === "file:") {
+    SERVER.err = "open this from its web address, not as a local file";
+    return;
+  }
+  SERVER.loading = true;
+  try {
+    // Same folder as this page, so it works on GitHub Pages with no config.
+    const r = await fetch("signals.json?t=" + Date.now(), { cache: "no-store" });
+    if (!r.ok) throw new Error("no signals.json (" + r.status + ")");
+    const j = await r.json();
+    SERVER.data = j; SERVER.at = Date.now(); SERVER.err = null;
+  } catch (e) {
+    // Not an error worth shouting about: the file only exists once the
+    // scheduled job has run at least once.
+    SERVER.err = e.message || String(e);
+    SERVER.data = null;
+  } finally {
+    SERVER.loading = false; render(true);
+  }
+}
+
+/** The server's signals, in this app's shape. */
+function serverSignals() {
+  const j = SERVER.data;
+  if (!j || !Array.isArray(j.signals)) return [];
+  return j.signals.map((s) => ({
+    symbol: s.symbol, side: s.side, leverage: s.leverage, risk: s.risk,
+    tag: s.tag, reasons: s.reasons || [], strat: s.strat, stf: s.stf,
+    entry: s.entry, stop: s.stop, initialStop: s.initial_stop,
+    price: s.last_price != null ? s.last_price : s.entry,
+    roi: 0, at: s.at, idx: s.idx, hits: s.hits || 0, be: false,
+    status: s.status || "in_progress", closedAt: null,
+    targets: (s.targets || []).map((t) => ({ ...t, hit: false })),
+    agree: s.agree, agreeOf: s.agree_of, atrPct: s.atr_pct, adxAt: s.adx,
+    confidence: s.confidence, rec: s.record || null,
+    chase: s.chase || null, by: ["Server"], setupName: "Server",
+    fromServer: true, life: "confirmed",
+  })).filter((s) => s.targets.length);
+}
+
+function serverBlock() {
+  const j = SERVER.data;
+  if (!SERVER.on) return "";
+  if (!j) {
+    return `<div class="card" style="margin-bottom:10px">
+      <div class="kv" style="border:0;padding-top:0">
+        <span class="k" style="font-weight:800">Background scanning</span>
+        <span class="v" style="color:var(--dim)">not set up</span></div>
+      <div class="hint" style="margin-bottom:0">Nothing at
+        <b>signals.json</b> yet. Once the scheduled job in your repository has
+        run once, this fills in with everything it found while your phone was
+        asleep.${SERVER.err ? " (" + esc(SERVER.err) + ")" : ""}</div></div>`;
+  }
+  const age = j.generated ? Math.round((Date.now() - j.generated) / 60000) : null;
+  return `<div class="card" style="margin-bottom:10px;border-color:#2b6b45">
+    <div class="kv" style="border:0;padding-top:0">
+      <span class="k" style="font-weight:800">
+        <span class="good">●</span> Scanned while you were away</span>
+      <span class="v">${age == null ? "—" : age + " min ago"}</span>
+    </div>
+    ${kv("Signals it found", (j.signals || []).length)}
+    ${kv("Coins covered", (j.universe || 0) + " · "
+      + (j.runs || 0) + " runs so far")}
+    ${kv("Strategies it runs", (j.strategies || []).join(", "))}
+    <div class="hint" style="margin-bottom:0">Not yet ported to the server:
+      ${esc((j.not_ported || []).join(", ") || "none")}. Those still only come
+      from this device while the page is open.
+      ${(j.failed || []).length ? "<br>" + j.failed.length
+        + " pairs failed to load on the last run." : ""}</div>
+  </div>`;
+}
+
+/* =========================================================================
+   PER-COIN SWEEP  —  every interval, for one coin at a time.
+
+   Until now a bot was a strategy on one chart period, and the coin was
+   whatever came up. That put the app's own "chart period" setting in direct
+   conflict with each bot's, and whichever ran last won — which is exactly the
+   confusion you get when two controls answer the same question.
+
+   This turns it around. A coin is the unit. For each coin in the rotation,
+   every enabled strategy is run across every interval, and the best signal
+   per direction is kept. So a coin is not judged on the period that happened
+   to be selected; it is judged on the period it actually works on.
+
+   The cost is real and there is no way around it: ten intervals is ten times
+   the replay work per coin. So it works through the list a few coins at a
+   time and carries results forward, the same as everything else here. Four
+   coins a scan covers sixty coins in about an hour.
+   ========================================================================= */
+
+const SWEEP = { coin: 0, running: false, at: 0, done: 0, step: "",
+                covered: new Map() };   // symbol -> {at, tfs, found}
+
+/** One coin, every interval, every enabled strategy. */
+async function sweepCoin(sym) {
+  const keep = snapshotSetup();
+  const out = [];
+  try {
+    for (const [sigTf, trTf] of MATRIX_TFS) {
+      if (!SWEEP.running) break;
+      let ltf, htf;
+      try {
+        [ltf, htf] = await Promise.all([
+          klines(sym, sigTf, CFG.sweepBars),
+          klines(sym, trTf, Math.min(500, CFG.sweepBars)),
+        ]);
+      } catch (e) { continue; }
+      if (!ltf || ltf.length < 220) continue;
+      CFG.signalTf = sigTf; CFG.trendTf = trTf;
+      for (const strat of sweepStrats()) {
+        if (!SWEEP.running) break;
+        CFG.strategy = strat;
+        try {
+          const r = await scanSymbol(sym);
+          for (const sig of r.found) {
+            sig.setup = "sweep"; sig.setupName = "Sweep";
+            sig.sweepTf = sigTf + ">" + trTf;
+            sig.botStart = 0;
+          }
+          out.push(...r.found);
+        } catch (e) { /* one bad combination must not stop the coin */ }
+      }
+      SWEEP.step = sym.replace("USDT", "") + " · " + sigTf;
+      SWEEP.done++;
+      render();
+      await new Promise((r) => setTimeout(r, 0));
+    }
+  } finally {
+    for (const k in keep) CFG[k] = keep[k];
+  }
+  return out;
+}
+
+/* Which strategies the sweep runs. Restricting it is the honest lever for
+   cost: ten strategies across ten intervals is a hundred replays per coin,
+   and on a phone that is a minute of work for one coin. */
+function sweepStrats() {
+  if (CFG.sweepStrats && CFG.sweepStrats.length) return CFG.sweepStrats;
+  return ["confluence", "ut", "brk", "mom"];
+}
+
+/* Keep only the best signal per coin and direction — the whole point is that
+   the coin gets one answer, not ten. Best means the newest that still clears
+   the entry check, breaking ties on independent agreement. */
+function sweepBest(list) {
+  const by = new Map();
+  for (const s of list) {
+    const k = s.symbol + "|" + s.side;
+    const cur = by.get(k);
+    const better = !cur
+      || (s.agree || 0) > (cur.agree || 0)
+      || ((s.agree || 0) === (cur.agree || 0) && s.at > cur.at);
+    if (better) by.set(k, s);
+  }
+  return [...by.values()];
+}
+
+async function sweepRun(coins) {
+  if (SWEEP.running || BUSY || MATRIX.running || EVO.running) return [];
+  SWEEP.running = true; SWEEP.done = 0;
+  const list = (coins && coins.length) ? coins
+    : (UNIVERSE.length ? UNIVERSE : CFG.focus);
+  const batch = [];
+  for (let k = 0; k < Math.min(CFG.sweepCoins, list.length); k++) {
+    batch.push(list[(SWEEP.coin + k) % list.length]);
+  }
+  SWEEP.coin = (SWEEP.coin + batch.length) % Math.max(1, list.length);
+  const found = [];
+  try {
+    for (const sym of batch) {
+      if (!SWEEP.running) break;
+      const got = sweepBest(await sweepCoin(sym));
+      SWEEP.covered.set(sym, { at: Date.now(), tfs: MATRIX_TFS.length,
+                               found: got.length });
+      found.push(...got);
+    }
+    SWEEP.at = Date.now();
+  } finally {
+    SWEEP.running = false; SWEEP.step = "";
+  }
+  // Hold them the same way bot findings are held, so a coin's answer survives
+  // until its turn comes round again.
+  for (const s of found) HELD.set(sigKey(s) + "|sweep", s);
+  render(true);
+  return found;
+}
+
+function sweepBlock() {
+  const seen = [...SWEEP.covered.entries()]
+    .sort((a, b) => b[1].at - a[1].at).slice(0, 8);
+  return `<div class="card" style="margin-bottom:10px">
+    <div class="kv" style="border:0;padding-top:0">
+      <span class="k" style="font-weight:800;font-size:15px">Per-coin sweep</span>
+      <button class="sw${CFG.sweepOn ? " on" : ""}"
+        onclick="CFG.sweepOn=!CFG.sweepOn;writeHash();render(true)"></button>
+    </div>
+    ${kv("Intervals per coin", MATRIX_TFS.length)}
+    ${kv("Strategies per interval", sweepStrats().length)}
+    ${kv("Replays per coin", MATRIX_TFS.length * sweepStrats().length)}
+    ${kv("Coins per scan", CFG.sweepCoins)}
+    ${kv("Coins covered so far", SWEEP.covered.size)}
+    ${SWEEP.running ? kv("Working on", esc(SWEEP.step || "…")) : ""}
+    <div class="kv"><span class="k">Coins per scan</span><span class="v">
+      <input type="range" min="1" max="8" step="1" value="${CFG.sweepCoins}"
+        oninput="setv('sweepCoins',this.value,'')">
+      <span id="v_sweepCoins">${CFG.sweepCoins}</span></span></div>
+    <button class="btn ${SWEEP.running ? "" : "gold"}" style="margin-top:8px"
+      onclick="${SWEEP.running ? "SWEEP.running=false" : "sweepRun()"}">${
+      SWEEP.running ? "Stop" : "Sweep the next " + CFG.sweepCoins
+        + " coins now"}</button>
+    <div class="hint" style="margin-bottom:0">Each coin is run through
+      <b>every</b> interval from 5m to 1d, on every enabled strategy, and only
+      the best signal per direction is kept. That is
+      ${MATRIX_TFS.length * sweepStrats().length} replays per coin, which is
+      why it works through the list a few at a time rather than all at once.
+      While this is on, the single chart period above is only a starting
+      point — the sweep decides per coin.</div>
+    ${seen.length ? `<div class="status" style="margin-top:8px">${seen.map(
+      ([sym, v]) => kv(esc(sym.replace("USDT", "")),
+        v.found + " signal" + (v.found === 1 ? "" : "s") + " · " + age(v.at))
+      ).join("")}</div>` : ""}
+  </div>`;
+}
+
+/* =========================================================================
+   THE BOOK  —  a published signal stays published.
+
+   Until now every scan rebuilt the list from scratch, which meant a signal
+   could appear at 10:00, vanish at 10:05 because it had drifted a little past
+   the freshness window, and come back at 10:10 when a different bot found it.
+   That is unusable. You cannot act on something that might not be there when
+   you look again, and a list that churns teaches you to ignore it.
+
+   So the filters now decide one thing only: whether a signal gets *published*.
+   Once it is in the book it stays there, tracked, until it actually resolves —
+   target, stop, or the setup breaking. A later scan updates its price and its
+   state; it does not re-litigate whether it should have existed.
+
+   This is a real trade-off and worth naming: a signal published on a filter
+   you later tighten will still be sitting there. That is the correct
+   behaviour. Changing your mind about a filter does not un-take a trade, and
+   an app that quietly deleted the evidence would be flattering you.
+   ========================================================================= */
+
+const BOOK = new Map();          // sigKey -> the published signal
+const BKKEY = "signals.book.v1";
+
+function saveBook() {
+  try {
+    const rows = [...BOOK.values()].slice(-120);
+    localStorage.setItem(BKKEY, JSON.stringify(rows));
+  } catch (e) { /* private mode */ }
+}
+
+function loadBook() {
+  try {
+    const rows = JSON.parse(localStorage.getItem(BKKEY) || "[]");
+    for (const s of rows) if (s && s.symbol) BOOK.set(sigKey(s), s);
+  } catch (e) { /* nothing to restore */ }
+}
+
+/** Publish anything new, then hand back the whole book, freshest first. */
+function bookMerge(passed, live) {
+  const now = Date.now();
+  for (const s of passed) {
+    const k = sigKey(s);
+    if (!BOOK.has(k)) {
+      // A copy, not the object itself. HELD and `all` hold references to the
+      // same signals, and updating the book in place would reach back and
+      // change theirs too — the kind of aliasing that surfaces weeks later as
+      // a signal that closed itself for no visible reason.
+      BOOK.set(k, Object.assign({}, s, { publishedAt: now }));
+    }
+  }
+  // Update what is already published from this scan's fresher copy of the
+  // same signal — price, targets hit, status — without changing whether it
+  // is in the list.
+  const bySeen = new Map();
+  for (const s of live) bySeen.set(sigKey(s), s);
+  for (const [k, held] of BOOK) {
+    const now2 = bySeen.get(k);
+    if (now2) {
+      held.price = now2.price; held.roi = now2.roi;
+      held.hits = now2.hits; held.status = now2.status; held.stop = now2.stop;
+      held.be = now2.be; held.targets = now2.targets;
+      held.closedAt = now2.closedAt; held.mae = now2.mae; held.mfe = now2.mfe;
+      held.chase = now2.chase;
+      // Fresher information about the same trade is worth having: another bot
+      // agreeing since it was published, or a confidence that has moved.
+      // Freezing those at publish time would leave "1 bot" on a card that
+      // four bots now back.
+      if (now2.by && now2.by.length) {
+        held.by = [...new Set([...(held.by || []), ...now2.by])];
+      }
+      if (now2.agree != null) held.agree = now2.agree;
+      if (now2.confidence != null) held.confidence = now2.confidence;
+      if (now2.mods) { held.mods = now2.mods; held.clash = now2.clash; }
+    }
+    held.life = lifeOf(held);
+    // Out of the book only when it is genuinely over, or so old that keeping
+    // it would be clutter rather than record.
+    const done = held.closedAt || held.life === "invalid";
+    const ancient = now - (held.publishedAt || held.at) > CFG.bookHours * 3600000;
+    if (done || ancient) {
+      if (held.closedAt) ARCHIVE.set(k, held);
+      BOOK.delete(k);
+    }
+  }
+  saveBook();
+  return [...BOOK.values()].sort((a, b) => (b.publishedAt || b.at)
+                                         - (a.publishedAt || a.at));
+}
+
 /* --------------------------------------------------------------------- run */
 async function run() {
   if (BUSY) return;
@@ -5067,6 +5417,17 @@ async function run() {
     s.price = round(live, s.entry);
     s.roi = netRoi(((s.price-s.entry)/s.entry)*100*(s.side==="LONG"?1:-1)*s.leverage,
                    s.leverage);
+  }
+
+  // Everything the server found while this device was asleep, folded in
+  // before the filters so it goes through exactly the same wall as anything
+  // found here. A signal that skipped the gates because of where it came from
+  // would be the one you could least trust.
+  if (SERVER.on && SERVER.data) {
+    const have = new Set(all.map((x) => x.symbol + "|" + x.side + "|" + x.at));
+    for (const s of serverSignals()) {
+      if (!have.has(s.symbol + "|" + s.side + "|" + s.at)) all.push(s);
+    }
   }
 
   // Carry forward what the bots that sat this scan out found on their last
@@ -5304,6 +5665,14 @@ async function run() {
   DROP.capped = Math.max(0, OPEN.length - CFG.maxOpen);
   OPEN = OPEN.slice(0, CFG.maxOpen);
 
+  // Everything above decided what to publish. From here the book decides what
+  // you see, so a signal does not blink out between scans.
+  if (CFG.keepSignals) {
+    const passed = OPEN.filter((x) => !x.belowBar);
+    const below = OPEN.filter((x) => x.belowBar);
+    OPEN = bookMerge(passed, all).concat(below);
+  }
+
   // The floor. Only ever fills a short list, never replaces a full one, and
   // every added card says which filter it missed.
   if (CFG.minShow && OPEN.length < CFG.minShow) {
@@ -5341,6 +5710,10 @@ async function run() {
   // Opt-in, and never in the same breath as the scan: five requests a coin on
   // top of a scan is what makes a phone stop responding.
   if (CFG.whaleOn && !WHALE.running) setTimeout(() => whaleRun(), 1500);
+  // The sweep is heavy, so it runs after the scan rather than inside it.
+  if (CFG.sweepOn && !SWEEP.running) setTimeout(() => sweepRun(), 2500);
+  // Pick up anything the scheduled job has written since the last scan.
+  if (SERVER.on && Date.now() - SERVER.at > 120000) loadServer();
   LASTRUN = Date.now(); progress(1);
   alertScan(all);
   setDot(ERROR && !all.length ? "bad" : "");
@@ -5814,7 +6187,10 @@ function digestBlock() {
       <span class="k"><b class="${s.side === "LONG" ? "up" : "down"}">${s.side}</b>
         ${esc(s.symbol.replace("USDT", ""))}
         <span style="color:#5e5e66">· ${esc(s.tag)}</span></span>
-      <span class="v">${s.entry} → SL ${s.stop}</span></div>`).join("");
+      <span class="v">${s.entry} <span style="color:#5e5e66">→</span>
+        <span class="up">TP ${s.targets[0] ? s.targets[0].price : "—"}</span>
+        <span style="color:#5e5e66">·</span>
+        <span class="down">SL ${s.stop}</span></span></div>`).join("");
   return `<div class="card" style="margin-bottom:10px;border-color:#2b6b45">
     <div class="kv" style="border:0;padding-top:0">
       <span class="k" style="font-weight:800;font-size:14px">
@@ -5857,9 +6233,14 @@ function card(s, i) {
       <span class="b ${s.side}">${s.spot ? "BUY spot"
         : s.side + " x" + s.leverage}</span>
       <span class="b risk-${s.risk}">${s.risk} risk</span>
-      <span class="b meta">${s.stf || CFG.signalTf} &middot; ${s.tag || (s.score+"/8")}</span>
+      <span class="b meta">${s.sweepTf ? esc(s.sweepTf.replace(">", " / "))
+        : (s.stf || CFG.signalTf)} &middot; ${s.tag || (s.score+"/8")}</span>
+      ${s.sweepTf ? `<span class="b" style="background:#1d3a5c;color:#9ad2ff"
+        >best of ${MATRIX_TFS.length} intervals</span>` : ""}
       ${s.belowBar ? `<span class="b" style="background:#3a2f16;color:#f0c14b"
         >below filter · ${esc(s.belowBar)}</span>` : ""}
+      ${s.fromServer ? `<span class="b" style="background:#14432c;color:#8ff0c0"
+        >found while away</span>` : ""}
       ${botBadge(s)}
       ${s.chase ? `<span class="b" style="background:${
         s.chase.verdict === "take" ? "#0f5f34"
@@ -5895,6 +6276,12 @@ function card(s, i) {
       : ""}</div>` : ""}
     <div class="prices"><span>Entry Price: <b>${s.entry}</b></span>
       <span>Stop Loss: <b>${s.stop}</b>${s.be?' <span class="good">(BE)</span>':""}</span></div>
+    <div class="prices"><span>Take Profit: <b class="up">${
+      s.targets[0] ? s.targets[0].price : "—"}</b>${
+      s.targets[0] ? ` <span class="up" style="font-weight:600">+${
+        s.targets[0].roi.toFixed(1)}%</span>` : ""}</span>
+      <span>Final target: <b class="up">${
+        s.targets.length ? s.targets[s.targets.length-1].price : "—"}</b></span></div>
     <div class="cur"><span class="lbl">${s.closedAt?"Final Price":"Current Price"}</span>
       <b${s.closedAt?"":' data-px="'+esc(s.symbol)+'"'}>${s.price}</b>
       <span class="${cls(s.roi)}"${s.closedAt?"":' data-roi="'+esc(s.symbol)+'"'}
@@ -6294,7 +6681,14 @@ function resultsView() {
     [["live","Scan window"],["bt","Backtest"]].map(([k,l])=>
       `<button class="${k===RTAB?"on":""}" onclick="setRtab('${k}')">${l}</button>`
       ).join("");
-  const head = rseg ? `<div class="seg" style="margin-bottom:12px">${rseg}</div>` : "";
+  const head = (rseg ? `<div class="seg" style="margin-bottom:12px">${rseg}</div>`
+    : "") + `<div class="hint" style="margin:-6px 0 14px">${RTAB === "bt"
+      ? "A backtest is what these rules would have done on candles that already "
+        + "happened. It is evidence, not a forecast. The settings it uses are "
+        + "the ones the search chose — see Report for how it chose them."
+      : "What actually happened to the signals this app gave you, since you "
+        + "started it. This is the column that settles arguments; a backtest "
+        + "can be fitted, a live record cannot."}</div>`;
   if (RTAB === "bt") return head + backtestView();
   const st = stats();
   const mx = Math.max(1, ...st.curve.map(Math.abs));
@@ -6447,7 +6841,7 @@ function profileView() {
     <div class="chips">${stratSeg}</div>
     <div class="segnote">${
       CFG.strategy === "auto"
-      ? "Auto — every pair is replayed through all five strategies and keeps "
+      ? "Auto — every pair is replayed through all ten strategies and keeps "
         + "whichever worked best on candles held back from the choice. Five "
         + "times the work of a normal scan; the pick is cached for 30 minutes."
       : occ
@@ -6644,7 +7038,7 @@ function autoTable() {
     <div class="status">${body}</div>
     <button class="btn" onclick="repickAuto()">Choose again from fresh history</button>
     ${coinTuneBlock()}
-    <div class="hint">Each pair was replayed through all five strategies and kept
+    <div class="hint">Each pair was replayed through all ten strategies and kept
       the one with the best expectancy, in R, over the newest third of its
       history. The number after the name is that score; the grey one is how many
       trades it came from. Fewer than four trades shows as "thin" — too little
@@ -6848,6 +7242,8 @@ const EXPORT_KEYS = [
   "alwaysOn","notify","sound","autoRefreshMin","sinceDeploy","dualScan",
   "onConflict",
   "minWinRate","minRecord","liveOnly","botsPerScan","botBtPairs","botBtBars",
+  "keepSignals","bookHours",
+  "sweepOn","sweepCoins","sweepBars","sweepStrats",
   "matrixCoins","matrixBars","matrixTop","matrixAuto","matrixEveryMin",
   "evoAuto","evoEveryHours","modOff","modGate",
   "chaseOn","chaseWarnR","chaseMaxR","chaseVwapBars","chaseVwapAtr",
@@ -7250,7 +7646,7 @@ function deployBlock() {
   if (DEPLOY.working || BEST.running) {
     return `<div class="status">
         ${kv("Deploying", esc(DEPLOY.step || BEST.step || "searching…"))}
-        ${kv("Strategies done", BEST.done + " of 5")}
+        ${kv("Strategies done", BEST.done + " of " + BEST_ORDER_OF().length)}
       </div>
       ${DEPLOY.step ? "" :
         `<button class="btn" onclick="cancelBest()">Stop</button>`}`;
@@ -7258,7 +7654,7 @@ function deployBlock() {
 
   if (!DEPLOY.on) {
     return `<button class="btn gold" onclick="deployNow()">Deploy</button>
-      <div class="hint">Runs the full search across all five strategies, applies
+      <div class="hint">Runs the full search across all ten strategies, applies
         the winner by itself, starts scanning with it, and re-checks every
         ${DEPLOY.retuneHours} hours — switching only if a challenger clearly
         beats what is running. One button instead of four steps.</div>`;
@@ -7304,7 +7700,7 @@ function deployBlock() {
         onclick="togDeployFresh()"></button></div></div>
     <div class="hint">With the first switch on, the search still decides the
       settings and the duration from the whole basket, but each coin then picks
-      whichever of the five strategies worked best on its own history. Turn it
+      whichever of the ten strategies worked best on its own history. Turn it
       off to run one strategy across everything.</div>
     <button class="btn" onclick="stopDeploy()">Stop deployment</button>
     <div class="hint">Re-checks only while this page is open — a browser tab
@@ -7368,6 +7764,18 @@ function autoPanel() {
       measures how far price has already run past the signal price, how stretched
       it is from VWAP, how far the leg has travelled, and what the book costs to
       cross — then says take it, wait for a retest at a named level, or leave it.</div>
+    <h2>Per-coin sweep — every interval</h2>
+    ${sweepBlock()}
+    <h2>Background scanning</h2>
+    <div class="status">
+      <div class="kv"><span class="k">Use what the server found</span>
+        <button class="sw${SERVER.on ? " on" : ""}"
+          onclick="SERVER.on=!SERVER.on;loadServer();render(true)"></button></div>
+    </div>
+    <div class="hint">A copy of the engine runs on GitHub every 15 minutes and
+      writes <b>signals.json</b> beside this page, so scanning carries on with
+      your phone locked. Those signals go through the same filters as the ones
+      found here and are marked <b>found while away</b>.</div>
     <h2>Whale engine</h2>
     <div class="status">
       <div class="kv"><span class="k">Read large-trader flow</span>
@@ -7925,7 +8333,7 @@ function deployCard() {
           onclick="setDepth('${k}')">${DEPTHS[k].label}</button>`).join("")}</div>
     <button class="btn gold" style="margin-top:0"
       onclick="deployNow()">Deploy</button>
-    <div class="hint">Tests all five strategies on ${coins} at your chosen
+    <div class="hint">Tests all ten strategies on ${coins} at your chosen
       speed, tunes each one, ranks them on history none of them was tuned
       against, switches the scanner to the winner, and refreshes your signals
       with it. All ${OPT_TFS.length} chart-period combinations are screened
@@ -7942,7 +8350,7 @@ function deployCard() {
     <div style="color:var(--dim);font-size:12px;line-height:1.5;margin-bottom:11px">
       ${DEPLOY.on
         ? (CFG.strategy === "auto"
-          ? `Live. Every coin runs whichever of the five strategies works best
+          ? `Live. Every coin runs whichever of the ten strategies works best
              on its own history, using the settings the search chose.`
           : `Live. Signals are coming from <b style="color:var(--txt)">${
              esc(BT_STRATS[CFG.strategy] || CFG.strategy)}</b> on every coin.`)
@@ -8135,6 +8543,7 @@ function render(force) {
           — one is long, the other short. Taking both is paying two spreads to
           hold no position; taking one is picking a side the app cannot pick
           for you.</div>` : "")
+      + serverBlock()
       + riskBar()
       + digestBlock()
       + (pass.length ? pass.map(card).join("")
@@ -9344,7 +9753,7 @@ function optVerdict(r) {
 /* =========================================================================
    BEST SETUP — one button that runs the whole search.
 
-   For each of the five strategies it downloads the top-20 pairs once, tunes
+   For each of the ten strategies it downloads the top-20 pairs once, tunes
    that strategy's own settings against three blocks of history, then scores
    the winner on a fourth block held back from the entire process. The five
    finalists are ranked on that held-back block only — never on the history
@@ -9415,7 +9824,7 @@ async function tuneAllSpeeds() {
       OPT.data = null; OPT.dataKey = "";
       BEST.rows = [];
 
-      await findBestSetup();               // all five strategies, this speed only
+      await findBestSetup();               // all ten strategies, this speed only
 
       if (BEST.rows.length && BEST.rows[0].holdout.n >= 5) {
         HBEST[speed] = {
@@ -9505,7 +9914,7 @@ async function findBestSetup() {
 
   try {
     /* ---------------------------------------------------------- first pass
-       Thirty-three chart periods tuned properly against five strategies is
+       Thirty-three chart periods tuned properly against ten strategies is
        an enormous amount of work, and most of those periods are hopeless
        within a few trials. So: a cheap screen over all of them on a short
        slice of history, then the real search on the handful that survived.
@@ -9815,22 +10224,33 @@ function backtestView() {
       SMA(ATR(200),200) × 0.8. The opposite band trails as the stop. Targets sit
       at 5, 10 and 15 band-widths — the script's own three — plus two further
       rungs to fill the usual five.</div>`;
-  const allBlock = `<div class="hint">All five are replayed over the same
-    candles, the same account rules and the same trend filter, so the comparison
-    is like for like. Settings for each are below.</div>`
-    + `<h2 style="font-size:11px">Open/Close Cross</h2>` + occBlock
-    + `<h2 style="font-size:11px">Support &amp; Resistance</h2>` + srBlock
-    + `<h2 style="font-size:11px">Confluence</h2>` + confBlock
-    + `<h2 style="font-size:11px">UT Bot</h2>` + utBlock
-    + `<h2 style="font-size:11px">Target Trend</h2>` + ttBlock;
+  // allBlock is gone with the rest of the hand-tuning: "compare all" now means
+  // compare them on the settings the search chose, which is the only
+  // comparison worth reading.
+  void occBlock; void srBlock; void confBlock; void utBlock; void ttBlock;
 
+  // The moving-average types, lengths, multipliers and thresholds used to be
+  // laid out here as knobs. They are gone, and that is the point: those are
+  // precisely the values the search tries thousands of combinations of, on
+  // held-back history, and a person guessing at them by hand is competing
+  // with that and losing. They are still reachable — Settings, under
+  // "Everything else" — but they are no longer presented as a thing to fiddle
+  // with before pressing Run.
   const settings = `<h2>Strategy</h2>
     <div class="chips">${stratSeg}</div>
-    <div class="segnote">The backtest keeps its own settings — nothing here
-      changes what the live scanner on the other tabs is doing.</div>
-    ${BT.strategy==="occ" ? occBlock : BT.strategy==="sr" ? srBlock
-      : BT.strategy==="confluence" ? confBlock : BT.strategy==="ut" ? utBlock
-      : BT.strategy==="tt" ? ttBlock : allBlock}
+    <div class="card" style="margin:8px 0 4px;border-color:#3d3320">
+      <div style="font-weight:700;font-size:13.5px;margin-bottom:4px">
+        The settings are not yours to guess</div>
+      <div class="hint" style="margin-bottom:9px">Moving-average type and
+        length, multipliers, thresholds — the search tries every combination of
+        those across all ${OPT_TFS.length} chart periods and scores them on
+        history they were not chosen on. Setting them by hand here would be
+        competing with that, by hand, on one guess.</div>
+      <div class="pickbar">
+        <button class="go" onclick="go('profile')">Run the search instead</button>
+        <button onclick="go('matrix')">See what it already found</button>
+      </div>
+    </div>
     <h2>Trend filter</h2><div class="status">
     ${tog("requireHtf","Only trade with the trend",BT.requireHtf)}
     ${selRaw("signalTf","Signal timeframe",BT.signalTf,ALL_TFS.slice(0,-2))}
@@ -10883,7 +11303,7 @@ let chRz; window.addEventListener("resize", ()=>{
 
 /* ------------------------------------------------------------------- start */
 readHash();
-loadBots(); loadMatrix(); loadModules(); loadEvo();
+loadBots(); loadMatrix(); loadModules(); loadEvo(); loadBook(); loadServer();
 loadSession();
 loadDeploy();
 // The backtester starts from whatever the app is currently set to, then keeps
