@@ -336,8 +336,11 @@ const CFG = {
   blacklist: ["USDCUSDT","FDUSDUSDT","TUSDUSDT","BTCDOMUSDT","USDEUSDT",
               "EURUSDT","GBPUSDT"],
   // Always scanned, always listed first, whatever their volume ranking.
-  focus: ["BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT","FETUSDT",
-          "UNIUSDT","ADAUSDT"],
+  // The majors, and only the majors. FET and UNI were in here for no reason
+  // anyone could defend — a default list should be the obvious one, and
+  // anything else is a choice the user should make rather than inherit.
+  focus: ["BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT","ADAUSDT",
+          "DOGEUSDT","AVAXUSDT","LINKUSDT","DOTUSDT"],
   focusFirst: true,
   pairMode: "volume",     // "volume" = top N by turnover, "custom" = your picks
   custom: [],             // chosen symbols when pairMode is "custom"
@@ -688,7 +691,16 @@ function readHash() {
                    .filter(Boolean).map(s=>s.endsWith("USDT")? s : s+"USDT");
     if (list.length) { CFG.custom = list; CFG.pairMode = "custom"; }
   }
-  const s = /[#&]s=(occ|confluence|sr|ut|tt|auto)/.exec(h);
+  // Your own coins. Without this they were chosen, used for one session, and
+  // silently lost on the next reload — which is worse than not offering the
+  // choice at all.
+  const f = /[#&]f=([^&]*)/.exec(h);
+  if (f) {
+    const list = decodeURIComponent(f[1]).split(",").map(x=>x.trim().toUpperCase())
+                   .filter(Boolean).map(x=>x.endsWith("USDT")? x : x+"USDT");
+    if (list.length) CFG.focus = list;
+  }
+  const s = /[#&]s=(occ|confluence|sr|ut|tt|auto|pat|brk|rsi|mr|mom)/.exec(h);
   if (s) CFG.strategy = s[1];
   const m = /[#&]m=(spot|futures)/.exec(h);
   if (m) CFG.market = m[1];
@@ -707,6 +719,7 @@ function writeHash() {
   const bits = [];
   if (CFG.pairMode === "custom" && CFG.custom.length)
     bits.push("p=" + CFG.custom.map(s=>s.replace("USDT","")).join(","));
+  if (CFG.focus.length) bits.push("f=" + CFG.focus.map(x=>x.replace("USDT","")).join(","));
   if (CFG.strategy !== "confluence") bits.push("s=" + CFG.strategy);
   if (CFG.market !== "futures") bits.push("m=" + CFG.market);
   if (CFG.horizon !== "medium") bits.push("h=" + CFG.horizon);
@@ -6227,7 +6240,10 @@ function card(s, i) {
      <span class="r">${t.roi.toFixed(2)}%${t.hit?" &#10003;":""}</span></div>`).join("");
   return `<div class="card${i===0?" open":""}" onclick="this.classList.toggle('open')">
     <div class="row1"><span class="sym">${esc(s.symbol)}</span>
-      ${s.focus?'<span style="color:var(--gold);font-size:13px">&#9733;</span>':""}
+      <span onclick="event.stopPropagation();toggleFocus('${esc(s.symbol)}')"
+        style="color:${s.focus ? "var(--gold)" : "#3f4652"};font-size:15px;
+        padding:0 4px" title="${s.focus ? "Remove from your coins"
+        : "Add to your coins"}">${s.focus ? "&#9733;" : "&#9734;"}</span>
       <span class="age">${age(s.closedAt||s.at)}</span></div>
     <div class="badges">
       <span class="b ${s.side}">${s.spot ? "BUY spot"
@@ -7733,6 +7749,8 @@ function autoPanel() {
     ${botsBlock()}
     <h2>How often you want signals</h2>
     ${rateBlock()}
+    <h2>Your coins</h2>
+    ${focusBlock()}
     <h2>Which coins</h2>
     <div class="seg">${modeSeg}</div>
     ${CFG.pairMode === "custom" ? pickerBlock()
@@ -8376,6 +8394,78 @@ function accordion(html) {
   return out;
 }
 function togSec(t) { PSEC[t] = !PSEC[t]; render(true); }
+
+/* Your focus coins.
+   These are always scanned whatever the coin mode says, and listed first.
+   The editor for them went missing when I removed a duplicated block, which
+   left the app using a list you had no way to change — the worst combination.
+   It is always visible now, not hidden behind picking "My coins" first. */
+function focusBlock() {
+  const chips = CFG.focus.map((sym) => `<button class="chip on"
+    onclick="unfocus('${esc(sym)}')">${esc(sym.replace("USDT", ""))} ×</button>`)
+    .join("");
+  const pool = (ALLSYMS.length ? ALLSYMS : []).filter(
+    (x) => !CFG.focus.includes(x)).slice(0, 40);
+  const add = pool.map((sym) => `<button class="chip"
+    onclick="focusOn('${esc(sym)}')">${esc(sym.replace("USDT", ""))}</button>`)
+    .join("");
+  return `<div class="segnote">Always scanned, always listed first, whichever
+      coin mode is on below. Tap to remove.</div>
+    <div class="chips">${chips || '<span class="hint">None yet.</span>'}</div>
+    <input class="search" id="fq" placeholder="Add a coin — type its name…"
+      value="${esc(FOCUSQ)}" oninput="focusFilter(this.value)"
+      autocapitalize="characters" autocomplete="off" spellcheck="false">
+    <div class="chips">${add || '<span class="hint">Waiting for the coin list…'
+      + '</span>'}</div>
+    <div class="pickbar" style="margin-top:6px">
+      <button onclick="focusMajors()">Add the majors</button>
+      <button onclick="CFG.focus=[];writeHash();render(true);refresh()">Clear</button>
+    </div>
+    <div class="hint">You can also tap the star on any signal card to add that
+      coin here.</div>`;
+}
+
+let FOCUSQ = "";
+function focusFilter(q) {
+  FOCUSQ = q;
+  const up = q.trim().toUpperCase();
+  // Filter in place rather than re-rendering the whole screen: a redraw on
+  // every keystroke loses the keyboard focus, which makes typing impossible.
+  const pool = (ALLSYMS.length ? ALLSYMS : [])
+    .filter((x) => !CFG.focus.includes(x) && (!up || x.includes(up)))
+    .slice(0, 40);
+  const box = document.querySelectorAll(".chips");
+  const target = box[box.length - 1];
+  if (!target) return;
+  target.innerHTML = pool.map((sym) => `<button class="chip"
+    onclick="focusOn('${esc(sym)}')">${esc(sym.replace("USDT", ""))}</button>`)
+    .join("") || '<span class="hint">No coin matches.</span>';
+}
+
+const MAJORS = ["BTCUSDT","ETHUSDT","SOLUSDT","BNBUSDT","XRPUSDT","ADAUSDT",
+                "DOGEUSDT","AVAXUSDT","LINKUSDT","DOTUSDT"];
+
+function focusMajors() {
+  CFG.focus = [...new Set([...CFG.focus, ...MAJORS])];
+  writeHash(); render(true); refresh();
+  toast("Majors added");
+}
+
+function focusOn(sym) {
+  if (!CFG.focus.includes(sym)) CFG.focus = [...CFG.focus, sym];
+  FOCUSQ = "";
+  writeHash(); render(true); refresh();
+  toast(sym.replace("USDT", "") + " added to your coins");
+}
+
+function unfocus(sym) {
+  CFG.focus = CFG.focus.filter((x) => x !== sym);
+  writeHash(); render(true); refresh();
+}
+
+function toggleFocus(sym) {
+  if (CFG.focus.includes(sym)) unfocus(sym); else focusOn(sym);
+}
 
 function pickerBlock() {
   return `<div class="segnote">Pick a sector, or choose coins one by one.</div>
