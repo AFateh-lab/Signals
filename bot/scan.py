@@ -14,6 +14,7 @@ No exchange keys are used or needed — only public market data.
 from __future__ import annotations
 
 import math
+import os
 import re
 import time
 import urllib.error
@@ -23,6 +24,34 @@ from dataclasses import dataclass, field, asdict
 from typing import Any
 
 NAN = float("nan")
+
+# ---------------------------------------------------------------- TLS trust
+#
+# Python does not use the macOS keychain. A fresh Mac install therefore has no
+# root certificates as far as Python is concerned, and every exchange fails
+# with "unable to get local issuer certificate" — which reads like the network
+# is down when it is nothing of the sort.
+#
+# Worse, if a VPN or antivirus is inspecting traffic, the chain ends in that
+# product's own root. It is in the keychain, so Safari is happy; Python has
+# never heard of it, so you get "self-signed certificate in certificate
+# chain". Same symptom, opposite cause.
+#
+# Both are solved by asking the operating system what it trusts, which is what
+# truststore does. certifi is the fallback: a bundled list of public roots,
+# which fixes the missing-roots case but not the intercepted one.
+SSL_NOTE = "default"
+try:
+    import truststore                       # noqa: F401
+    truststore.inject_into_ssl()
+    SSL_NOTE = "system trust store"
+except Exception:                           # noqa: BLE001
+    try:
+        import certifi
+        os.environ.setdefault("SSL_CERT_FILE", certifi.where())
+        SSL_NOTE = "certifi bundle"
+    except Exception:                       # noqa: BLE001
+        pass
 
 UA = {"User-Agent": "signals-bot/1.0 (+github actions)"}
 
@@ -56,6 +85,21 @@ class Blocked(Exception):
 
 # --------------------------------------------------------------------- data
 
+# A last resort, and an honest one. Only public market data passes through
+# here — no keys, no orders, nothing to steal — so the realistic worst case of
+# skipping verification is being fed wrong prices by whatever is intercepting
+# the connection. That is not nothing, which is why it is off unless you ask.
+INSECURE = (os.environ.get("SSL_INSECURE") or "").strip().lower() in (
+    "1", "true", "yes")
+_NOVERIFY = None
+if INSECURE:
+    import ssl as _ssl
+    _NOVERIFY = _ssl.create_default_context()
+    _NOVERIFY.check_hostname = False
+    _NOVERIFY.verify_mode = _ssl.CERT_NONE
+    SSL_NOTE = "VERIFICATION OFF (SSL_INSECURE=1)"
+
+
 def get_json(url: str, tries: int = 3) -> Any:
     """One request, with a couple of retries. Exchanges rate-limit by weight,
     and a scheduled job that hammers one on failure gets banned rather than
@@ -69,11 +113,23 @@ def get_json(url: str, tries: int = 3) -> Any:
     for attempt in range(tries):
         try:
             req = urllib.request.Request(url, headers=UA)
-            with urllib.request.urlopen(req, timeout=25) as r:
+            with urllib.request.urlopen(req, timeout=25,
+                                        context=_NOVERIFY) as r:
                 return json.loads(r.read().decode())
         except urllib.error.HTTPError as e:
             if 400 <= e.code < 500:
                 raise Blocked(f"HTTP {e.code} from {url.split('/')[2]}") from e
+        except urllib.error.URLError as e:
+            # A certificate failure is not a rate limit; retrying three times
+            # just makes you wait nine seconds for the same answer.
+            if "CERTIFICATE_VERIFY_FAILED" in str(e.reason):
+                raise Blocked(
+                    "TLS trust failed — Python cannot verify this Mac's "
+                    "certificates. Run: pip3 install --user truststore   "
+                    "(or start with SSL_INSECURE=1 to skip verification)"
+                ) from e
+            last = e
+            time.sleep(1.5 * (attempt + 1))
             last = e
             time.sleep(1.5 * (attempt + 1))
         except Exception as e:            # noqa: BLE001 - any failure retries
@@ -2011,6 +2067,7 @@ BUILD = "S9 · 2026-08-12 · every period, every pair"
 
 def main() -> int:
     print(f"build: {BUILD}")
+    print(f"tls: {SSL_NOTE}")
     started = time.time()
     state = load_state()
     log: list[str] = []

@@ -302,7 +302,7 @@ class _Boom(urllib.error.HTTPError):
         super().__init__("http://x/y", 451, "blocked", {}, None)
 
 
-def _always_451(req, timeout=0):
+def _always_451(req, timeout=0, context=None):
     tries_seen.append(1)
     raise _Boom()
 
