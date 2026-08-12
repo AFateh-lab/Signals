@@ -5028,6 +5028,40 @@ function serverSignals() {
   })).filter((s) => s.targets.length);
 }
 
+/* "It found 8" and a list of 2 is the kind of gap that makes an app feel
+   broken. It is not broken — the server reports what it found, and the page
+   shows what survives your own rules. But a number you cannot account for is
+   worse than no number, so this says where the rest went.
+
+   Only the coin filter can be attributed exactly. Everything else is grouped
+   honestly as "your rules" rather than guessed at, because a signal can fail
+   three gates at once and naming one of them would be a lie. */
+function serverShownRow() {
+  const found = serverSignals();
+  if (!found.length) return "";
+  // A server signal the device found too is merged into the local one and
+  // loses its fromServer mark. Counting it as hidden would be wrong.
+  const local = new Set(OPEN.map((s) => s.symbol + "|" + s.side + "|" + s.at));
+  const shown = found.filter((s) =>
+    local.has(s.symbol + "|" + s.side + "|" + s.at)).length;
+  const hidden = Math.max(0, found.length - shown);
+  if (!hidden) return kv("Shown here", shown + " — all of them");
+
+  const mine = CFG.pairMode === "custom" ? new Set(mineList()) : null;
+  const offList = mine ? found.filter((s) => !mine.has(s.symbol)).length : 0;
+  const byRules = Math.max(0, hidden - offList);
+  const why = [
+    offList ? offList + " not on your coin list" : "",
+    byRules ? byRules + " below your rules — freshness, score, agreement or "
+      + "the anti-chase gate" : "",
+  ].filter(Boolean).join(", ");
+
+  return kv("Shown here", shown + " of " + found.length)
+    + `<div class="hint" style="margin:-2px 0 8px">Hidden: ${why}. Loosen them
+       under <b>How often you want signals</b>, or switch to
+       <b>Mine + biggest</b> under Coins, to see the rest.</div>`;
+}
+
 function serverBlock() {
   const j = SERVER.data;
   if (!SERVER.on) return "";
@@ -5049,6 +5083,7 @@ function serverBlock() {
       <span class="v">${age == null ? "—" : age + " min ago"}</span>
     </div>
     ${kv("Signals it found", (j.signals || []).length)}
+    ${serverShownRow()}
     ${kv("Coins covered", (j.universe || 0) + " · "
       + (j.runs || 0) + " runs so far")}
     ${kv("Its coin list", esc(j.coin_source || "top by turnover"))}
@@ -5262,6 +5297,24 @@ function loadBook() {
 /** Publish anything new, then hand back the whole book, freshest first. */
 function bookMerge(passed, live) {
   const now = Date.now();
+
+  // Removing a coin is not the same as tightening a filter.
+  //
+  // The book deliberately keeps a published signal even after you make a
+  // rule stricter, because changing your mind about a threshold does not
+  // un-take a trade. But taking a coin off your list is a different
+  // statement: you are saying you do not trade it at all. Keeping DOGE on
+  // screen after you deleted DOGE is not honesty, it is clutter — and it is
+  // what makes the list look like it ignores you.
+  if (CFG.pairMode === "custom") {
+    const mine = new Set(mineList());
+    let dropped = 0;
+    for (const [k, s] of BOOK) {
+      if (!mine.has(s.symbol)) { BOOK.delete(k); dropped++; }
+    }
+    if (dropped) saveBook();
+  }
+
   for (const s of passed) {
     const k = sigKey(s);
     if (!BOOK.has(k)) {
@@ -5472,10 +5525,14 @@ async function run() {
     const ran = new Set(passes.map((p) => p.id));
     const live = new Set(lineup.map((p) => p.id));
     const carried = [];
+    const mineNow = CFG.pairMode === "custom" ? new Set(mineList()) : null;
     for (const [k, held] of HELD) {
       // A bot that just ran has said everything it has to say; drop its old
       // entries so a signal it no longer finds cannot linger.
       if (ran.has(held.setup) || !live.has(held.setup)) { HELD.delete(k); continue; }
+      // And a coin you have taken off your list stops being carried at all.
+      // Its bot may not have run this pass, so nothing else would clear it.
+      if (mineNow && !mineNow.has(held.symbol)) { HELD.delete(k); continue; }
       carried.push(held);
     }
     for (const s of all) HELD.set(sigKey(s) + "|" + (s.setup || "live"), s);
@@ -6757,10 +6814,18 @@ function resultsView() {
          : CFG.liveOnly
          ? "Nothing has resolved since you started watching on " + sinceLabel() + "."
          : "No resolved signals in the scanned window."}</div>`}
+    ${/* This button used to live behind an accordion in Settings, which is
+          nowhere near where anyone looks for it. It belongs on the tab whose
+          record it clears. */""}
+    <button class="btn" style="margin-top:10px" onclick="askReset()">Reset
+      tracking — start from now</button>
+    <div class="hint">Clears everything currently tracked, including trades
+      opened on coins you have since removed, and restarts the record from this
+      moment. The Backtest tab is untouched.</div>
     <div class="hint">${CFG.liveOnly
       ? "Only signals that fired after " + sinceLabel() + " are counted here, "
         + "tracked bar by bar from their entry. Resolved ones are kept even once "
-        + "their candles scroll out of the window. Use Reset in Settings to start "
+        + "their candles scroll out of the window. Use Reset above to start "
         + "a fresh record, or the Backtest tab for the full history."
       : "Every signal the strategy would have produced over the last " + CFG.bars
         + " candles, tracked bar by bar."} Fees and funding are not included.</div>`;
