@@ -5011,24 +5011,34 @@ const SERVER = { at: 0, data: null, err: null, loading: false, on: true };
    the path, so the raw URL can be worked out without configuration. Anywhere
    else — a custom domain, a local server — there is nothing to guess from, so
    it just uses the file next to the page. */
-function rawSignalsUrl() {
+function rawSignalsUrl(branch) {
   const m = /^([^.]+)\.github\.io$/.exec(location.hostname);
   if (!m) return null;
   const parts = location.pathname.split("/").filter(Boolean);
   // user.github.io/Repo/page.html  →  the repo is the first segment.
   // user.github.io/page.html       →  the repo is the user's own site repo.
   const repo = parts.length > 1 ? parts[0] : m[1] + ".github.io";
-  return `https://raw.githubusercontent.com/${m[1]}/${repo}/main/signals.json`;
+  return `https://raw.githubusercontent.com/${m[1]}/${repo}/${
+    branch || "data"}/signals.json`;
 }
 
+/* Three places to look, in the order they are likely to be current.
+
+   `data` first, because that is where the bot writes now — keeping results off
+   main is what stops GitHub Pages rebuilding the site every two minutes and
+   queueing up the one build you actually wanted.
+   `main` second, for a repository set up before that change.
+   The file beside the page last, which only helps if Pages has published
+   recently, and is therefore the least trustworthy of the three. */
 async function fetchSignalsJson() {
   const bust = "?t=" + Date.now();
-  const raw = rawSignalsUrl();
-  if (raw) {
+  for (const branch of ["data", "main"]) {
+    const raw = rawSignalsUrl(branch);
+    if (!raw) break;
     try {
       const r = await fetch(raw + bust, { cache: "no-store" });
       if (r.ok) return await r.json();
-    } catch (e) { /* fall through to the published copy */ }
+    } catch (e) { /* try the next one */ }
   }
   const r2 = await fetch("signals.json" + bust, { cache: "no-store" });
   if (!r2.ok) throw new Error("no signals.json (" + r2.status + ")");
@@ -8121,7 +8131,7 @@ const rngRaw = (k, label, val, min, max, step, suf) =>
    for a heading that had moved. A page cannot tell you it is stale, so it
    should at least tell you what it is. Read this out and it settles the
    question in one look. */
-const BUILD = "B21 · 2026-08-12 · matrix batch is yours to set";
+const BUILD = "B22 · 2026-08-12 · results on their own branch";
 
 function buildStamp() {
   return `<div class="hint" style="margin-top:18px;text-align:center;
