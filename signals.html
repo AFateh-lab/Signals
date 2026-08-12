@@ -4992,6 +4992,36 @@ function coherenceOf(sig) {
 
 const SERVER = { at: 0, data: null, err: null, loading: false, on: true };
 
+/* Where signals.json is read from.
+
+   On a *.github.io address the owner and repository are in the hostname and
+   the path, so the raw URL can be worked out without configuration. Anywhere
+   else — a custom domain, a local server — there is nothing to guess from, so
+   it just uses the file next to the page. */
+function rawSignalsUrl() {
+  const m = /^([^.]+)\.github\.io$/.exec(location.hostname);
+  if (!m) return null;
+  const parts = location.pathname.split("/").filter(Boolean);
+  // user.github.io/Repo/page.html  →  the repo is the first segment.
+  // user.github.io/page.html       →  the repo is the user's own site repo.
+  const repo = parts.length > 1 ? parts[0] : m[1] + ".github.io";
+  return `https://raw.githubusercontent.com/${m[1]}/${repo}/main/signals.json`;
+}
+
+async function fetchSignalsJson() {
+  const bust = "?t=" + Date.now();
+  const raw = rawSignalsUrl();
+  if (raw) {
+    try {
+      const r = await fetch(raw + bust, { cache: "no-store" });
+      if (r.ok) return await r.json();
+    } catch (e) { /* fall through to the published copy */ }
+  }
+  const r2 = await fetch("signals.json" + bust, { cache: "no-store" });
+  if (!r2.ok) throw new Error("no signals.json (" + r2.status + ")");
+  return await r2.json();
+}
+
 async function loadServer() {
   if (!SERVER.on || SERVER.loading) return;
   // Opened straight from a file rather than served over the web: the browser
@@ -5003,10 +5033,15 @@ async function loadServer() {
   }
   SERVER.loading = true;
   try {
-    // Same folder as this page, so it works on GitHub Pages with no config.
-    const r = await fetch("signals.json?t=" + Date.now(), { cache: "no-store" });
-    if (!r.ok) throw new Error("no signals.json (" + r.status + ")");
-    const j = await r.json();
+    // Read the file straight from the repository first, and only fall back to
+    // the copy Pages serves.
+    //
+    // Pages republishes the whole site after every commit, and that takes a
+    // minute or two. At a two-minute scan interval the published copy would
+    // permanently trail the real one — you would be looking at the run before
+    // last and have no way to tell. The raw endpoint updates the moment the
+    // bot pushes, and sends CORS headers, so the page can read it directly.
+    const j = await fetchSignalsJson();
     SERVER.data = j; SERVER.at = Date.now(); SERVER.err = null;
   } catch (e) {
     // Not an error worth shouting about: the file only exists once the
@@ -8045,7 +8080,7 @@ const rngRaw = (k, label, val, min, max, step, suf) =>
    for a heading that had moved. A page cannot tell you it is stale, so it
    should at least tell you what it is. Read this out and it settles the
    question in one look. */
-const BUILD = "B16 · 2026-08-12 · viewer + server book";
+const BUILD = "B17 · 2026-08-12 · 2-min ready";
 
 function buildStamp() {
   return `<div class="hint" style="margin-top:18px;text-align:center;
