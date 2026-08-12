@@ -350,6 +350,14 @@ const CFG = {
   // someone else's trade.
   coinSince: {},
   onlyAfterAdd: true,
+  // Re-price a still-valid signal at what it costs now, rather than showing
+  // an entry nobody can get any more. Off by default: it changes every
+  // number on the card, and that should be a choice you made.
+  reprice: false,
+  // A re-priced trade has to still pay for its own risk. Below this, the
+  // first target is closer than the stop and the trade is not worth taking
+  // however good the direction looks.
+  repriceMinRR: 1.0,
   signalTf: "1h",
   trendTf: "4h",
   bars: 500,
@@ -5187,6 +5195,40 @@ function serverShownRow() {
        <b>Mine + biggest</b> under Coins.</div>` : "");
 }
 
+/* The pipeline: what is one condition away from firing, and which condition.
+   Deliberately not styled as a signal card. These are not trades — publishing
+   them as though they were is how a watchlist turns into a list of things you
+   took too early. */
+function pendingBlock() {
+  const j = SERVER.data;
+  if (!CFG.viewer || !j || !Array.isArray(j.pending) || !j.pending.length) return "";
+  const only = CFG.pairMode === "custom" ? new Set(mineList()) : null;
+  const rows = j.pending
+    .filter((s) => !only || only.has(s.symbol))
+    .filter((s) => !CFG.onlyAfterAdd || afterYouAdded({ symbol: s.symbol, at: s.at }))
+    .slice(0, 12);
+  if (!rows.length) return "";
+  return `<div class="card" style="margin-bottom:10px;border-color:#4a4636">
+    <div class="kv" style="border:0;padding-top:0">
+      <span class="k" style="font-weight:800">
+        <span style="color:var(--gold)">◷</span> Waiting on one thing</span>
+      <span class="v">${rows.length} in the queue</span>
+    </div>
+    ${rows.map((s) => `<div class="kv">
+      <span class="k"><b class="${s.side === "LONG" ? "up" : "down"}">${
+        s.side}</b> ${esc(s.symbol.replace("USDT", ""))}
+        <span style="color:#5e5e66">· ${esc(s.strat_name || s.strat || "")}
+        · ${esc(s.stf || "")}</span></span>
+      <span class="v" style="color:var(--dim);text-align:right;max-width:58%">${
+        esc(s.waiting_for || "")}</span></div>`).join("")}
+    <div class="hint" style="margin-bottom:0">Each of these has a complete
+      setup and one missing condition, named above. They are
+      <b>not signals and carry no entry</b> — if the condition arrives, the
+      coin appears in the
+      list below on its own. If it does not, nothing was missed.</div>
+  </div>`;
+}
+
 function serverBlock() {
   const j = SERVER.data;
   if (!SERVER.on) return "";
@@ -5535,8 +5577,12 @@ async function viewerRun() {
     if (CFG.minAgree && s.agree != null && s.agree < CFG.minAgree) return false;
     return true;
   });
-  list.sort((a, b) => (b.confidence || 0) - (a.confidence || 0) || b.at - a.at);
-  OPEN = list.slice(0, CFG.maxOpen);
+  const priced = CFG.reprice
+    ? list.map(reprice).filter((s) => !s.repriceDead
+        && (!s.repriced || s.rr >= CFG.repriceMinRR))
+    : list;
+  priced.sort((a, b) => (b.confidence || 0) - (a.confidence || 0) || b.at - a.at);
+  OPEN = priced.slice(0, CFG.maxOpen);
   CLOSED = [];
   LASTRUN = Date.now();
   setDot(SERVER.err ? "bad" : "");
@@ -6564,6 +6610,10 @@ function card(s, i) {
       style="color:#f0c14b">Do not chase · ${esc(s.chase.why[0])}${
       s.chase.retest ? " · wait for a retest near <b>" + s.chase.retest + "</b>"
       : ""}</div>` : ""}
+    ${s.repriced ? `<div class="why" style="color:#8ff0c0">Re-priced at the
+      price now &middot; reward:risk <b>${s.rr}</b> to the first target${
+      s.gone ? " &middot; " + s.gone + " target"
+        + (s.gone === 1 ? "" : "s") + " already passed" : ""}</div>` : ""}
     <div class="prices"><span>Entry Price: <b>${s.entry}</b></span>
       <span>Stop Loss: <b>${s.stop}</b>${s.be?' <span class="good">(BE)</span>':""}</span></div>
     <div class="prices"><span>Take Profit: <b class="up">${
@@ -7540,7 +7590,7 @@ const EXPORT_KEYS = [
   "utKey","utAtrLen","ttLen","ttTarget",
   "slAtr","tpAtr","maxLossPct","beAfter","minLev","maxLev","feePct","slipPct",
   "pairs","pairMode","pickBy","sideBias","custom","focus","maxOpen","minShow","maxAgeBars",
-  "coinSince","onlyAfterAdd",
+  "coinSince","onlyAfterAdd","reprice","repriceMinRR",
   "alwaysOn","notify","sound","autoRefreshMin","sinceDeploy","dualScan",
   "onConflict",
   "minWinRate","minRecord","liveOnly","botsPerScan","botBtPairs","botBtBars",
@@ -8112,7 +8162,21 @@ function autoPanel() {
           ></button></div>
       ${rngRaw("chaseWarnR", "Warn once it has run", CFG.chaseWarnR, 0.2, 2, 0.1, "R")}
       ${rngRaw("chaseMaxR", "Hide it once it has run", CFG.chaseMaxR, 0.5, 4, 0.1, "R")}
+      <div class="kv"><span class="k">Re-price entries at the price now</span>
+        <button class="sw${CFG.reprice ? " on" : ""}"
+          onclick="tglReprice()"></button></div>
+      ${CFG.reprice ? rngRaw("repriceMinRR", "Drop it below this reward:risk",
+        CFG.repriceMinRR, 0.5, 3, 0.1, ":1") : ""}
     </div>
+    <div class="hint">${CFG.reprice
+      ? "On — a signal whose direction still holds is shown at what it costs "
+        + "now: live entry, the same stop and targets, leverage and "
+        + "percentages recalculated. Targets price has already passed are "
+        + "removed, and anything whose first remaining target is now closer "
+        + "than its stop is dropped rather than dressed up."
+      : "Off — cards show the entry the setup fired at, which for an older "
+        + "signal is a price you can no longer get. Turn this on to see the "
+        + "same idea priced at what you would actually pay."}</div>
     <div class="hint">A great signal at a terrible entry is a losing trade. This
       measures how far price has already run past the signal price, how stretched
       it is from VWAP, how far the leg has travelled, and what the book costs to
@@ -8187,7 +8251,7 @@ const rngRaw = (k, label, val, min, max, step, suf) =>
    for a heading that had moved. A page cannot tell you it is stale, so it
    should at least tell you what it is. Read this out and it settles the
    question in one look. */
-const BUILD = "B26 · 2026-08-12 · shows the server rate";
+const BUILD = "B28 · 2026-08-12 · the pipeline";
 
 function buildStamp() {
   return `<div class="hint" style="margin-top:18px;text-align:center;
@@ -9028,6 +9092,13 @@ function focusOn(sym) {
 /* The moment a coin joined the list. Set once and never moved, so removing a
    coin and adding it back genuinely restarts it rather than quietly keeping
    the old clock. */
+function tglReprice() {
+  CFG.reprice = !CFG.reprice;
+  writeHash(); render(true); refresh();
+  toast(CFG.reprice ? "Entries re-priced at the price now"
+                    : "Showing the original entry prices");
+}
+
 function tglAfterAdd() {
   CFG.onlyAfterAdd = !CFG.onlyAfterAdd;
   // Turning it on now means "from now" for coins already on the list, which
@@ -9046,6 +9117,58 @@ function stampCoin(sym) {
    choosing, at this moment, to watch these coins from here. */
 function stampAllCoins() {
   for (const s of mineList()) stampCoin(s);
+}
+
+/* =========================================================================
+   RE-PRICING — the direction was right, the entry has moved on.
+
+   A signal that fired three hours ago is not useless. The read may still be
+   good; what is stale is the number next to "Entry". Showing that old number,
+   and a percentage measured from it, describes a trade you did not take.
+
+   So this re-prices the same idea at what it costs now:
+
+     entry    the live price
+     stop     unchanged — it is a level on the chart, not a distance from you
+     targets  unchanged, for the same reason
+     leverage recalculated, so hitting the stop still costs what you set
+     percentages recalculated from the new entry
+
+   The important part is what it refuses. Moving your entry closer to the
+   target while the stop stays put makes the trade worse, and often bad. Every
+   re-priced card carries its new reward-to-risk, and one that no longer pays
+   for its own risk is dropped rather than dressed up. A trade whose stop has
+   already been touched is dead and is not offered at all. */
+function reprice(s) {
+  const px = s.price;
+  if (!CFG.reprice || !px || !s.targets || !s.targets.length) return s;
+  if (s.closedAt) return s;
+  const long = s.side === "LONG";
+  const stop = s.initialStop != null ? s.initialStop : s.stop;
+  // The stop is already behind price: this is not an entry, it is a loss.
+  if (long ? px <= stop : px >= stop) return { ...s, repriceDead: true };
+
+  const risk = Math.abs(px - stop);
+  if (!(risk > 0)) return { ...s, repriceDead: true };
+  const slPct = risk / px * 100;
+  const lev = Math.max(CFG.minLev,
+    Math.min(CFG.maxLev, Math.floor(CFG.maxLossPct / slPct))) || CFG.minLev;
+
+  // Targets that price has already passed are gone; you cannot enter now and
+  // be paid for a move that already happened.
+  const left = s.targets.filter((t) => long ? t.price > px : t.price < px);
+  if (!left.length) return { ...s, repriceDead: true };
+
+  const targets = left.map((t, i) => ({
+    ...t, index: i + 1,
+    roi: +netRoi(Math.abs(t.price - px) / px * 100 * lev, lev).toFixed(2),
+  }));
+  const rr = Math.abs(targets[0].price - px) / risk;
+
+  return { ...s, entry: round(px, px), stop: round(stop, px),
+           initialStop: round(stop, px), leverage: lev, targets,
+           roi: 0, repriced: true, rr: +rr.toFixed(2),
+           gone: s.targets.length - left.length };
 }
 
 /* Was this signal born after you started watching the coin? */
@@ -9261,6 +9384,7 @@ function render(force) {
           hold no position; taking one is picking a side the app cannot pick
           for you.</div>` : "")
       + serverBlock()
+      + pendingBlock()
       + riskBar()
       + digestBlock()
       + (pass.length ? pass.map(card).join("")

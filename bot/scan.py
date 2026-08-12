@@ -1434,6 +1434,7 @@ def scan_coin(sym: str, bars: dict[str, list[dict]]) -> dict:
     be double-counting the same price twice."""
     all_open: list[dict] = []
     all_closed: list[dict] = []
+    all_pending: list[dict] = []
     for stf, ttf in CFG["tf_ladder"]:
         if not bars.get(stf) or not bars.get(ttf):
             continue
@@ -1445,6 +1446,7 @@ def scan_coin(sym: str, bars: dict[str, list[dict]]) -> dict:
             CFG["signal_tf"], CFG["trend_tf"] = keep_s, keep_t
         all_open.extend(res["open"])
         all_closed.extend(res["closed"])
+        all_pending.extend(res.get("pending", []))
 
     for s in all_open:
         s["confidence"] = confidence(s)
@@ -1454,7 +1456,19 @@ def scan_coin(sym: str, bars: dict[str, list[dict]]) -> dict:
         cur = best.get(k)
         if cur is None or (s["confidence"], s["at"]) > (cur["confidence"], cur["at"]):
             best[k] = s
-    return {"open": list(best.values()), "closed": all_closed}
+    for s in all_pending:
+        s["confidence"] = confidence(s)
+    live_keys = {(s["symbol"], s["side"]) for s in best.values()}
+    bestp: dict[tuple[str, str], dict] = {}
+    for s in all_pending:
+        k = (s["symbol"], s["side"])
+        if k in live_keys:
+            continue          # it fired on another period; not pending at all
+        cur = bestp.get(k)
+        if cur is None or (s["confidence"], s["at"]) > (cur["confidence"], cur["at"]):
+            bestp[k] = s
+    return {"open": list(best.values()), "closed": all_closed,
+            "pending": list(bestp.values())}
 
 
 def scan_symbol(sym: str, ltf: list[dict], htf: list[dict]) -> dict:
@@ -1469,32 +1483,50 @@ def scan_symbol(sym: str, ltf: list[dict], htf: list[dict]) -> dict:
             found.extend(SCANNERS[key](sym, d))
         except Exception:                 # noqa: BLE001 - one bad strategy
             continue                      # must not take the whole coin down
-    open_, closed = [], []
+    open_, closed, pending = [], [], []
     bar_ms = (d.c[1]["t"] - d.c[0]["t"]) if len(d.c) > 1 else 3_600_000
     fresh_cut = d.c[-1]["t"] - CFG["max_age_bars"] * bar_ms
     for s in found:
         n, of = agreement(d, s["idx"], s["side"])
         s["agree"], s["agree_of"] = n, of
-        if CFG["require_htf"]:
-            bias = htf_bias(h, s["at"])
-            if bias and bias != s["side"]:
-                continue
+
+        # Every reason this one is not being published, collected rather than
+        # returned from on first sight. A setup blocked by one thing is a
+        # trade waiting for that thing to happen; a setup blocked by four is
+        # just a bad idea. Only the first kind is worth watching.
+        blocked: list[str] = []
+        bias = htf_bias(h, s["at"]) if CFG["require_htf"] else None
+        if bias and bias != s["side"]:
+            blocked.append(f"the {CFG['trend_tf']} trend is the other way")
+        if CFG["min_agree"] and n < CFG["min_agree"]:
+            blocked.append(f"only {n} of {of} reads back it "
+                           f"({CFG['min_agree']} needed)")
+
         track(s, d)
         if s.get("closed_at"):
             closed.append(s)
             continue
-        if CFG["min_agree"] and n < CFG["min_agree"]:
-            continue
-        if s["at"] < fresh_cut:
-            continue
-        # Freshness in bars alone is not enough. On 1-day candles, "24 bars"
-        # means twenty-four *days*, so a setup from last week arrives looking
-        # current. An absolute cap in hours applies whatever the timeframe.
-        if CFG["max_age_hours"] and \
-                (now_ms() - s["at"]) > CFG["max_age_hours"] * 3_600_000:
-            continue
+
+        stale = s["at"] < fresh_cut or (
+            CFG["max_age_hours"]
+            and (now_ms() - s["at"]) > CFG["max_age_hours"] * 3_600_000)
         s["chase"] = chase_check(d, s)
-        open_.append(s)
+        if s["chase"].get("verdict") == "late":
+            blocked.append("price has already run too far past the entry")
+
+        if not blocked and not stale:
+            open_.append(s)
+            continue
+
+        # The pipeline. Not published as a signal, but shown so you can see
+        # what is one condition away — and, more usefully, what that condition
+        # is. A stale one is not waiting for anything; it has simply missed.
+        if blocked and not stale and len(blocked) == 1:
+            p = dict(s)
+            p["waiting_for"] = blocked[0]
+            p["pending"] = True
+            pending.append(p)
+
     # newest first, one per coin and direction
     open_.sort(key=lambda x: -x["at"])
     seen, uniq = set(), []
@@ -1504,7 +1536,17 @@ def scan_symbol(sym: str, ltf: list[dict], htf: list[dict]) -> dict:
             continue
         seen.add(k)
         uniq.append(s)
-    return {"open": uniq, "closed": closed}
+
+    pending.sort(key=lambda x: -x["at"])
+    pseen, puniq = set(), []
+    for s in pending:
+        k = (s["symbol"], s["side"])
+        if k in pseen or k in seen:      # already a real signal — not pending
+            continue
+        pseen.add(k)
+        puniq.append(s)
+
+    return {"open": uniq, "closed": closed, "pending": puniq}
 
 
 # ======================================================================
@@ -1954,6 +1996,7 @@ def main() -> int:
                  if s["symbol"] in batch and not s.get("closed_at")}
 
     fresh, closed_all, failed = [], [], []
+    pending_all: list[dict] = []
     tracked: dict[str, dict] = {}
     for sym in batch:
         try:
@@ -1967,6 +2010,7 @@ def main() -> int:
             res = scan_coin(sym, bars)
             fresh.extend(res["open"])
             closed_all.extend(res["closed"])
+            pending_all.extend(res.get("pending", []))
             for k, s in list(open_prev.items()):
                 if s["symbol"] != sym:
                     continue
@@ -2017,6 +2061,11 @@ def main() -> int:
         "rate": RATE,
         "failed": failed[:10],
         "signals": allsig[:120],
+        # What is one condition away from firing, and which condition. Kept
+        # separate from `signals` so nothing downstream can mistake a queue
+        # for a trade.
+        "pending": sorted(pending_all,
+                          key=lambda x: (-x.get("confidence", 0), -x["at"]))[:40],
     }
     state["runs"] = payload["runs"]
     OUT.write_text(json.dumps(payload, indent=1))

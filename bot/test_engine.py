@@ -728,6 +728,54 @@ ok("and they are ordered shortest first",
                          key=lambda x: ("mhdw".index(x[-1]), int(x[:-1]))),
    str(E.TF_NEEDED))
 
+# ---------------------------------------------------------- the pipeline
+#
+# "I want to see which signal is in the pipeline waiting for confirmation."
+# The rule that makes it useful rather than noise: one thing missing, and the
+# card has to name it.
+
+def recent(path, tf_ms=3_600_000):
+    """Candles that end roughly now. The fixed 2023 timestamps everywhere else
+    are fine for maths, but the freshness gate measures against the clock, so
+    a pipeline test built on them would find nothing and pass vacuously."""
+    c = candles(path, tf_ms)
+    shift = E.now_ms() - c[-1]["t"] - tf_ms
+    for b in c:
+        b["t"] += shift
+    return c
+
+
+# A clean uptrend on the signal chart against a clear downtrend above it: the
+# strategies fire long, the higher timeframe refuses, and that is exactly one
+# missing condition.
+_pipe_ltf = recent(trend)
+_pipe_htf = recent([250 - i * 0.4 for i in range(400)], 14_400_000)
+_pr = E.scan_symbol("PIPEUSDT", _pipe_ltf, _pipe_htf)
+ok("a scan returns a pending list as well as open and closed",
+   isinstance(_pr.get("pending"), list), str(type(_pr.get("pending"))))
+ok("and it is not empty when a setup is genuinely one gate away",
+   len(_pr["pending"]) > 0, f"{len(_pr['pending'])} waiting")
+ok("every pending entry says what it is waiting for",
+   bool(_pr["pending"]) and all(x.get("waiting_for") for x in _pr["pending"]),
+   str([x.get("waiting_for") for x in _pr["pending"]][:2]))
+ok("and is marked so nothing downstream mistakes it for a signal",
+   all(x.get("pending") is True for x in _pr["pending"]))
+ok("nothing is both open and pending",
+   not ({(x["symbol"], x["side"]) for x in _pr["open"]}
+        & {(x["symbol"], x["side"]) for x in _pr["pending"]}),
+   f"{len(_pr['open'])} open, {len(_pr['pending'])} pending")
+ok("nothing already resolved is queued as pending",
+   all(not x.get("closed_at") for x in _pr["pending"]))
+ok("one entry per coin and direction, not one per strategy",
+   len({(x["symbol"], x["side"]) for x in _pr["pending"]})
+   == len(_pr["pending"]))
+
+_reasons = {x["waiting_for"] for x in _pr["pending"]}
+ok("the reasons are the ones a person can act on",
+   all(("trend is the other way" in r) or ("reads back it" in r)
+       or ("run too far" in r) for r in _reasons) if _reasons else True,
+   str(list(_reasons)[:3]))
+
 print()
 print(f"{len(PASS)} passed, {len(FAIL)} failed")
 if FAIL:
