@@ -344,6 +344,12 @@ const CFG = {
   focusFirst: true,
   pairMode: "volume",     // "volume" = top N by turnover, "custom" = your picks
   custom: [],             // chosen symbols when pairMode is "custom"
+  // When each coin joined your list, and whether that matters. A setup that
+  // fired before you had ever heard of the coin — already half way to its
+  // target, already showing a gain you did not take — is not a signal, it is
+  // someone else's trade.
+  coinSince: {},
+  onlyAfterAdd: true,
   signalTf: "1h",
   trendTf: "4h",
   bars: 500,
@@ -691,6 +697,8 @@ function readHash() {
   // defaults and a list full of coins you never chose.
   restoreCfg();
   const h = location.hash || "";
+  // Deferred: mineList() needs the hash parsed first. Stamped at the end of
+  // readHash instead — see the call below.
   // A packed setup carries everything, so it wins outright over the short keys.
   const packed = /[#&]cfg=([A-Za-z0-9\-_]+)/.exec(h);
   if (packed && importPacked(packed[1])) return;
@@ -723,6 +731,10 @@ function readHash() {
   }
   const t = /[#&]tf=([0-9]+[smhdwM])/.exec(h);     // explicit tf wins
   if (t) CFG.signalTf = t[1];
+  // Anything on the list without a start time gets one now. A coin arriving
+  // from a shared link starts from the moment you opened the link, which is
+  // the only moment you could have acted on it.
+  stampAllCoins();
 }
 function writeHash() {
   const bits = [];
@@ -5402,6 +5414,8 @@ function bookMerge(passed, live) {
     // straight back after the sweep — cleared and re-added in the same pass,
     // which is exactly how this looked from the outside.
     if (mineOnly && !mineOnly.has(s.symbol)) continue;
+    // And never publish a setup that fired before you were watching the coin.
+    if (!afterYouAdded(s)) continue;
     const k = sigKey(s);
     if (!BOOK.has(k)) {
       // A copy, not the object itself. HELD and `all` hold references to the
@@ -5474,6 +5488,7 @@ async function viewerRun() {
   // disconnect every control on the Settings screen from what you see.
   const list = serverSignals().filter((s) => {
     if (only && !only.has(s.symbol)) return false;
+    if (!afterYouAdded(s)) return false;
     if (CFG.modGate && (s.confidence || 0) < CFG.modGate) return false;
     if (CFG.maxAgeBars) {
       const mins = BARMIN[s.stf || CFG.signalTf] || 60;
@@ -7485,6 +7500,7 @@ const EXPORT_KEYS = [
   "utKey","utAtrLen","ttLen","ttTarget",
   "slAtr","tpAtr","maxLossPct","beAfter","minLev","maxLev","feePct","slipPct",
   "pairs","pairMode","pickBy","sideBias","custom","focus","maxOpen","minShow","maxAgeBars",
+  "coinSince","onlyAfterAdd",
   "alwaysOn","notify","sound","autoRefreshMin","sinceDeploy","dualScan",
   "onConflict",
   "minWinRate","minRecord","liveOnly","botsPerScan","botBtPairs","botBtBars",
@@ -8131,7 +8147,7 @@ const rngRaw = (k, label, val, min, max, step, suf) =>
    for a heading that had moved. A page cannot tell you it is stale, so it
    should at least tell you what it is. Read this out and it settles the
    question in one look. */
-const BUILD = "B22 · 2026-08-12 · results on their own branch";
+const BUILD = "B23 · 2026-08-12 · a coin starts clean";
 
 function buildStamp() {
   return `<div class="hint" style="margin-top:18px;text-align:center;
@@ -8805,6 +8821,18 @@ function focusBlock() {
     <div class="seg">${seg}</div>
     <div class="hint">${note}</div>
 
+    <div class="kv" style="margin-top:12px"><span class="k">
+        <b>Only signals from after I added the coin</b></span>
+      <button class="sw${CFG.onlyAfterAdd ? " on" : ""}"
+        onclick="tglAfterAdd()"></button></div>
+    <div class="hint">${CFG.onlyAfterAdd
+      ? "On — a coin starts clean. Setups that fired before you added it are "
+        + "hidden, however good they look, because they were never yours to "
+        + "take. Remove a coin and add it back and the clock restarts."
+      : "Off — you also see setups that fired before you added the coin. They "
+        + "may already be half way to their target, or already losing; the "
+        + "profit shown on them was never available to you."}</div>
+
     ${serverCoinsBlock()}`;
 }
 
@@ -8840,6 +8868,7 @@ function addSector(name) {
   const add = catMembers(name);
   if (!add.length) { toast("Coin list still loading"); return; }
   CFG.focus = [...new Set([...CFG.focus, ...add])];
+  stampAllCoins();
   writeHash(); render(true); refresh();
   toast(add.length + " added from " + name);
 }
@@ -8927,6 +8956,7 @@ function addTopN(n) {
   const before = mineList().length;
   CFG.focus = [...new Set([...CFG.focus, ...add])];
   const now = mineList().length;
+  stampAllCoins();
   writeHash(); render(true); refresh();
   // Said out loud because it is a real cost, not a scary warning: every coin
   // is fetched on every scan, on this phone, every five minutes.
@@ -8936,6 +8966,7 @@ function addTopN(n) {
 
 function focusMajors() {
   CFG.focus = [...new Set([...CFG.focus, ...MAJORS])];
+  stampAllCoins();
   writeHash(); render(true); refresh();
   toast("Majors added");
 }
@@ -8948,9 +8979,40 @@ function mineList() {
 
 function focusOn(sym) {
   if (!CFG.focus.includes(sym)) CFG.focus = [...CFG.focus, sym];
+  stampCoin(sym);
   FOCUSQ = "";
   writeHash(); render(true); refresh();
   toast(sym.replace("USDT", "") + " added to your coins");
+}
+
+/* The moment a coin joined the list. Set once and never moved, so removing a
+   coin and adding it back genuinely restarts it rather than quietly keeping
+   the old clock. */
+function tglAfterAdd() {
+  CFG.onlyAfterAdd = !CFG.onlyAfterAdd;
+  // Turning it on now means "from now" for coins already on the list, which
+  // is the only start time that can honestly be claimed for them.
+  if (CFG.onlyAfterAdd) stampAllCoins();
+  writeHash(); render(true); refresh();
+}
+
+function stampCoin(sym) {
+  if (!CFG.coinSince) CFG.coinSince = {};
+  if (!CFG.coinSince[sym]) CFG.coinSince[sym] = Date.now();
+}
+
+/* Anything already on the list when this feature arrived has no timestamp.
+   Stamping them now is the honest reading of "from when I added it": you are
+   choosing, at this moment, to watch these coins from here. */
+function stampAllCoins() {
+  for (const s of mineList()) stampCoin(s);
+}
+
+/* Was this signal born after you started watching the coin? */
+function afterYouAdded(s) {
+  if (!CFG.onlyAfterAdd) return true;
+  const since = CFG.coinSince && CFG.coinSince[s.symbol];
+  return !since || s.at >= since;
 }
 
 function unfocus(sym) {
@@ -8958,6 +9020,7 @@ function unfocus(sym) {
   // only one would make a coin you just tapped reappear on the next redraw.
   CFG.focus = CFG.focus.filter((x) => x !== sym);
   CFG.custom = (CFG.custom || []).filter((x) => x !== sym);
+  if (CFG.coinSince) delete CFG.coinSince[sym];
   writeHash(); render(true); refresh();
 }
 
