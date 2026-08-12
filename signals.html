@@ -7987,7 +7987,7 @@ const rngRaw = (k, label, val, min, max, step, suf) =>
    for a heading that had moved. A page cannot tell you it is stale, so it
    should at least tell you what it is. Read this out and it settles the
    question in one look. */
-const BUILD = "B14 · 2026-08-12 · add any coin";
+const BUILD = "B15 · 2026-08-12 · top 50/100";
 
 function buildStamp() {
   return `<div class="hint" style="margin-top:18px;text-align:center;
@@ -8627,6 +8627,8 @@ function focusBlock() {
     <div class="chips">${sectors}</div>
     <div class="pickbar" style="margin-top:6px">
       <button onclick="focusMajors()">Add the majors</button>
+      <button onclick="addTopN(50)">Add top 50</button>
+      <button onclick="addTopN(100)">Add top 100</button>
       <button onclick="CFG.focus=[];CFG.custom=[];writeHash();render(true);refresh()"
         >Clear all</button>
     </div>
@@ -8738,6 +8740,25 @@ function onlyMine() {
     CFG.custom = [];                 // one list from here on
   }
   writeHash(); render(true); refresh();
+}
+
+/* The biggest N by 24h turnover, added to your list.
+
+   Ranked by turnover rather than by "market cap top 100", because turnover is
+   what this app can actually verify from the exchange. A coin with a huge
+   valuation and no volume cannot be traded on a stop, whatever a coin-ranking
+   site says about it. */
+function addTopN(n) {
+  if (!ALLSYMS.length) { toast("Coin list still loading — try again in a moment"); return; }
+  const add = ALLSYMS.slice(0, n);
+  const before = mineList().length;
+  CFG.focus = [...new Set([...CFG.focus, ...add])];
+  const now = mineList().length;
+  writeHash(); render(true); refresh();
+  // Said out loud because it is a real cost, not a scary warning: every coin
+  // is fetched on every scan, on this phone, every five minutes.
+  toast((now - before) + " added — " + now + " coins now"
+    + (now > 60 ? ". Scans will take noticeably longer." : ""));
 }
 
 function focusMajors() {
