@@ -5051,7 +5051,16 @@ function serverBlock() {
     ${kv("Signals it found", (j.signals || []).length)}
     ${kv("Coins covered", (j.universe || 0) + " · "
       + (j.runs || 0) + " runs so far")}
+    ${kv("Its coin list", esc(j.coin_source || "top by turnover"))}
     ${kv("Strategies it runs", (j.strategies || []).join(", "))}
+    ${CFG.pairMode === "custom" ? `<div class="hint" style="margin-bottom:0">
+      You are on <b>Only my coins</b>, so anything the server found outside
+      your list is hidden here even if it scanned it. Settings → Coins →
+      <b>Copy my list for bot/coins.txt</b> to stop it wasting its run on
+      coins you do not want.</div>` : ""}
+    ${(j.coins_missing || []).length ? `<div class="hint"
+      style="margin-bottom:0">Not listed on the exchange the server reached,
+      so skipped: ${esc(j.coins_missing.join(", "))}.</div>` : ""}
     <div class="hint" style="margin-bottom:0">Not yet ported to the server:
       ${esc((j.not_ported || []).join(", ") || "none")}. Those still only come
       from this device while the page is open.
@@ -5442,7 +5451,14 @@ async function run() {
   // would be the one you could least trust.
   if (SERVER.on && SERVER.data) {
     const have = new Set(all.map((x) => x.symbol + "|" + x.side + "|" + x.at));
+    // "Only my coins" has to mean it. The device filter works by choosing
+    // which coins to fetch, so it never sees a server signal for a coin it
+    // did not ask for — which is how AAOI appeared on a screen focused on
+    // ten majors. The server has its own list and may be behind yours, so
+    // the gate is applied again here.
+    const only = CFG.pairMode === "custom" ? new Set(mineList()) : null;
     for (const s of serverSignals()) {
+      if (only && !only.has(s.symbol)) continue;
       if (!have.has(s.symbol + "|" + s.side + "|" + s.at)) all.push(s);
     }
   }
@@ -6248,7 +6264,12 @@ function card(s, i) {
         style="color:${s.focus ? "var(--gold)" : "#3f4652"};font-size:15px;
         padding:0 4px" title="${s.focus ? "Remove from your coins"
         : "Add to your coins"}">${s.focus ? "&#9733;" : "&#9734;"}</span>
-      <span class="age">${age(s.closedAt||s.at)}</span></div>
+      ${/* When the setup fired on the chart — not when the app last looked.
+             A bare "4 hours ago" next to a scan you just started reads as a
+             stale app rather than an old setup, so it says which. */""}
+      <span class="age" title="When the setup triggered on the chart">${
+        s.closedAt ? "closed " + age(s.closedAt)
+                   : "triggered " + age(s.at)}</span></div>
     <div class="badges">
       <span class="b ${s.side}">${s.spot ? "BUY spot"
         : s.side + " x" + s.leverage}</span>
@@ -7730,12 +7751,8 @@ function deployBlock() {
 
 /* The whole of Settings in Automatic mode: two decisions and a button. */
 function autoPanel() {
-  const modeSeg = [["volume", "Biggest"], ["movement", "Most movement"],
-                   ["custom", "My coins"]]
-    .map(([k, l]) => `<button class="${
-      (k === "custom" ? CFG.pairMode === "custom"
-        : CFG.pairMode !== "custom" && CFG.pickBy === k) ? "on" : ""}"
-      onclick="setCoinSource('${k}')">${l}</button>`).join("");
+  // The coin segment used to live here too. It is inside focusBlock() now,
+  // next to the list it governs, so the question is asked once.
   const mktSeg = [["spot", "Spot"], ["futures", "Futures"]].map(([k, l]) =>
     `<button class="${k === CFG.market ? "on" : ""}"
       onclick="setMarket('${k}')">${l}</button>`).join("");
@@ -7753,18 +7770,8 @@ function autoPanel() {
     ${botsBlock()}
     <h2>How often you want signals</h2>
     ${rateBlock()}
-    <h2>Your coins</h2>
+    <h2>Coins</h2>
     ${focusBlock()}
-    <h2>Which coins</h2>
-    <div class="seg">${modeSeg}</div>
-    ${CFG.pairMode === "custom" ? pickerBlock()
-      : CFG.pickBy === "movement"
-      ? `<div class="segnote">Scanning the ${CFG.pairs} USDT pairs that moved
-          furthest in the last 24 hours, out of everything turning over more
-          than $20m a day. More range to reach the targets — and more range to
-          reach the stop.</div>`
-      : `<div class="segnote">Scanning the ${CFG.pairs} biggest USDT pairs by 24h
-        volume.</div>`}
     <h2>How you trade</h2>
     <div class="seg">${mktSeg}</div>
     <div class="segnote">${CFG.market === "spot"
@@ -8404,39 +8411,101 @@ function togSec(t) { PSEC[t] = !PSEC[t]; render(true); }
    The editor for them went missing when I removed a duplicated block, which
    left the app using a list you had no way to change — the worst combination.
    It is always visible now, not hidden behind picking "My coins" first. */
+/* One list, one switch, one place.
+
+   This used to be three sections — "Your coins", "Which coins", and a sector
+   picker with its own Add-majors button — each editing an overlapping idea of
+   the same thing. Three controls answering one question is not more control,
+   it is a puzzle. Everything below edits a single list, and one segment says
+   what happens to it. */
 function focusBlock() {
-  const chips = CFG.focus.map((sym) => `<button class="chip on"
+  const mine = mineList();
+  const chips = mine.map((sym) => `<button class="chip on"
     onclick="unfocus('${esc(sym)}')">${esc(sym.replace("USDT", ""))} ×</button>`)
     .join("");
   const pool = (ALLSYMS.length ? ALLSYMS : []).filter(
-    (x) => !CFG.focus.includes(x)).slice(0, 40);
+    (x) => !mine.includes(x)).slice(0, 40);
   const add = pool.map((sym) => `<button class="chip"
     onclick="focusOn('${esc(sym)}')">${esc(sym.replace("USDT", ""))}</button>`)
     .join("");
-  return `<div class="segnote">Always scanned, always listed first, whichever
-      coin mode is on below. Tap to remove.</div>
-    <div class="chips">${chips || '<span class="hint">None yet.</span>'}</div>
+  const sectors = Object.keys(CATS).map((c) => `<button class="chip cat"
+    onclick="addSector('${esc(c)}')">+ ${esc(c)}</button>`).join("");
+
+  const only = CFG.pairMode === "custom";
+  const seg = [["custom", "Only my coins"],
+               ["volume", "Mine + biggest"],
+               ["movement", "Mine + movers"]]
+    .map(([k, l]) => `<button class="${
+      (k === "custom" ? only : !only && CFG.pickBy === k) ? "on" : ""}"
+      onclick="setCoinSource('${k}')">${l}</button>`).join("");
+
+  const note = only
+    ? `Only these ${mine.length} coins are scanned. Nothing else can produce a
+       signal — on this device or from the server.`
+    : CFG.pickBy === "movement"
+    ? `Your coins, plus the ${CFG.pairs} pairs that moved furthest in 24 hours.
+       More range to reach the targets, and more range to reach the stop.`
+    : `Your coins, plus the ${CFG.pairs} biggest pairs by 24h turnover. Signals
+       will arrive from coins you did not pick.`;
+
+  return `<div class="segnote">Your list. Tap a coin to remove it, or add one
+      below. The star on any signal card adds that coin here too.</div>
+    <div class="chips">${chips || '<span class="hint">None yet — add some '
+      + 'below.</span>'}</div>
     <input class="search" id="fq" placeholder="Add a coin — type its name…"
       value="${esc(FOCUSQ)}" oninput="focusFilter(this.value)"
       autocapitalize="characters" autocomplete="off" spellcheck="false">
     <div class="chips">${add || '<span class="hint">Waiting for the coin list…'
       + '</span>'}</div>
-    <div class="kv" style="margin-top:8px"><span class="k">
-        <b>Scan only these coins</b></span>
-      <button class="sw${CFG.pairMode === "custom" ? " on" : ""}"
-        onclick="onlyMine()"></button></div>
-    <div class="hint">${CFG.pairMode === "custom"
-      ? "Only your " + mineList().length + " coins are scanned. Nothing else "
-        + "can produce a signal."
-      : "Off — your coins are always scanned and listed first, but the app "
-        + "also looks at the top " + CFG.pairs + " by turnover, so signals "
-        + "will arrive from coins you did not pick."}</div>
+    <div class="segnote" style="margin-top:10px">Or add a whole sector:</div>
+    <div class="chips">${sectors}</div>
     <div class="pickbar" style="margin-top:6px">
       <button onclick="focusMajors()">Add the majors</button>
-      <button onclick="CFG.focus=[];writeHash();render(true);refresh()">Clear</button>
+      <button onclick="CFG.focus=[];CFG.custom=[];writeHash();render(true);refresh()"
+        >Clear all</button>
     </div>
-    <div class="hint">You can also tap the star on any signal card to add that
-      coin here.</div>`;
+
+    <div class="segnote" style="margin-top:14px"><b>What gets scanned</b></div>
+    <div class="seg">${seg}</div>
+    <div class="hint">${note}</div>
+
+    ${serverCoinsBlock()}`;
+}
+
+/* The server keeps its own copy of the list, because it runs when this page
+   is closed and cannot ask it anything. Rather than a second place to curate
+   coins, this hands you the exact text to paste into one file. */
+function serverCoinsBlock() {
+  const mine = mineList();
+  const srv = (SERVER.data && SERVER.data.coins) || null;
+  const same = srv && mine.length === srv.length
+    && mine.every((s) => srv.includes(s));
+  const state = !SERVER.on
+    ? `<span class="v" style="color:var(--dim)">background scanning is off</span>`
+    : !srv
+    ? `<span class="v" style="color:var(--dim)">not reported yet</span>`
+    : same
+    ? `<span class="v good">matches your list</span>`
+    : `<span class="v" style="color:var(--warn,#d29922)">${
+        esc((SERVER.data.coin_source || "different"))}</span>`;
+  return `<div class="kv" style="margin-top:14px"><span class="k">
+      <b>Server is scanning</b></span>${state}</div>
+    <div class="hint">The background scanner reads <b>bot/coins.txt</b> in your
+      repository. Copy your list, paste it into that file, commit — and the
+      server scans exactly these. Delete the file and it goes back to the top
+      ${CFG.pairs} by turnover.</div>
+    <button class="btn" onclick="copyOut(mineList().join('\\n'),
+      mineList().length + ' coins')">Copy my list for bot/coins.txt</button>`;
+}
+
+/* Adds a sector to your list rather than replacing it. The old picker set the
+   list to the sector, so choosing "AI" silently threw away everything else. */
+function addSector(name) {
+  const add = catMembers(name);
+  if (!add.length) { toast("Coin list still loading"); return; }
+  CFG.focus = [...new Set([...CFG.focus, ...add])];
+  writeHash(); render(true); refresh();
+  toast(add.length + " added from " + name);
 }
 
 let FOCUSQ = "";
@@ -8490,7 +8559,10 @@ function focusOn(sym) {
 }
 
 function unfocus(sym) {
+  // Both lists, because the chips are drawn from mineList(). Removing from
+  // only one would make a coin you just tapped reappear on the next redraw.
   CFG.focus = CFG.focus.filter((x) => x !== sym);
+  CFG.custom = (CFG.custom || []).filter((x) => x !== sym);
   writeHash(); render(true); refresh();
 }
 
@@ -8595,7 +8667,15 @@ function setHorizon(h) {
 
 /** One control for three states: biggest, most movement, or a hand-picked list. */
 function setCoinSource(k) {
-  if (k === "custom") { setPairMode("custom"); return; }
+  if (k === "custom") {
+    // "Only my coins" with nothing in the list would scan nothing at all and
+    // read as a broken app rather than an empty setting.
+    if (!mineList().length) { toast("Add a coin to your list first"); return; }
+    CFG.pairMode = "custom";
+    PRESET = "custom";
+    writeHash(); render(true); refresh();
+    return;
+  }
   CFG.pickBy = k;
   if (CFG.pairMode === "custom") CFG.pairMode = "volume";
   PRESET = "custom";
