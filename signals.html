@@ -681,6 +681,12 @@ let ALLSYMS = [], PICKQ = "";        // every tradable pair + the picker's searc
 /* The chosen pairs live in the URL, not in storage - so a reload keeps them,
    the home-screen icon remembers them, and you can send someone your setup. */
 function readHash() {
+  // Your settings first, from this device. The address bar is for sharing a
+  // setup and for carrying it to another phone; it should not be the only
+  // copy. Opening the plain address — from a bookmark, a home-screen icon,
+  // or anything that drops the part after the # — used to hand you factory
+  // defaults and a list full of coins you never chose.
+  restoreCfg();
   const h = location.hash || "";
   // A packed setup carries everything, so it wins outright over the short keys.
   const packed = /[#&]cfg=([A-Za-z0-9\-_]+)/.exec(h);
@@ -7376,6 +7382,60 @@ function exportConfig() {
   }
   return out;
 }
+
+/* ==========================================================================
+   SETTINGS THAT SURVIVE A PLAIN LINK
+
+   The hash is a good way to share a setup and a terrible way to store one.
+   Half the settings never reached it — only six short keys did — and any
+   route that dropped the fragment (a bookmark saved before the hash existed,
+   a link pasted without it, an app that trims URLs) silently reset the lot.
+
+   So the whole config is mirrored to this device. The hash still wins when
+   it is present, because a link someone hands you should mean what it says.
+   ======================================================================= */
+
+const CFGKEY = "signals.cfg.v1";
+let CFGLAST = "";
+
+function saveCfg() {
+  try {
+    const s = JSON.stringify(exportConfig());
+    if (s === CFGLAST) return;              // nothing changed; skip the write
+    CFGLAST = s;
+    localStorage.setItem(CFGKEY, s);
+  } catch (e) { /* private mode, or storage full */ }
+}
+
+function restoreCfg() {
+  try {
+    const raw = localStorage.getItem(CFGKEY);
+    if (!raw) return false;
+    const cfg = JSON.parse(raw);
+    let n = 0;
+    for (const k of EXPORT_KEYS) if (k in cfg) { CFG[k] = cfg[k]; n++; }
+    if (cfg.perCoin) {
+      AUTOPICK.clear();
+      for (const sym in cfg.perCoin) {
+        const v = cfg.perCoin[sym];
+        AUTOPICK.set(sym, {strat: v.strategy, tf: v.timeframe, ttf: v.trend,
+                           params: v.params, exp: NaN, n: 0,
+                           at: Date.now(), tuned: !!v.params});
+      }
+    }
+    CFGLAST = raw;
+    return n > 0;
+  } catch (e) { return false; }
+}
+
+// Written on a slow clock rather than from every setter. There are dozens of
+// places that change a setting and hooking each one is how you end up with
+// the two or three that were missed.
+setInterval(saveCfg, 5000);
+addEventListener("pagehide", saveCfg);
+addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "visible") saveCfg();
+});
 
 function exportLink() {
   const packed = btoa(unescape(encodeURIComponent(JSON.stringify(exportConfig()))))
