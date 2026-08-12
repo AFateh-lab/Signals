@@ -3678,8 +3678,29 @@ function matrixView() {
       The things you <b>choose</b> — coins, how often you want signals, your
       bots, your risk limits — all live on <b>Settings</b>.</div>
   </div>`;
-  return intro + head + (MATRIX.err ? `<div class="segnote" style="color:#ffb08a">${
-    esc(MATRIX.err)}</div>` : "") + table + grid + shortlist + wall
+  const body = intro + head
+    + (MATRIX.err ? `<div class="segnote" style="color:#ffb08a">${
+      esc(MATRIX.err)}</div>` : "") + table + grid + shortlist + wall;
+  // Everything below the matrix scores itself from trades this device
+  // replayed to a conclusion. In viewer mode there are none, so every one of
+  // them reads "no data yet" for ever. A table that can never fill is not a
+  // measurement, it is furniture — so it is named and put away rather than
+  // left on screen looking broken.
+  if (CFG.viewer) {
+    return body + `<h2>Measured on this device only</h2>
+      <div class="card"><div class="hint" style="margin-bottom:0">
+        The exit brain, the whale engine, module agreement, the bot factory
+        and the module-lift table all score themselves against trades
+        <b>this device</b> tracked to their stop or target. The server does
+        not publish its finished trades yet, so they have nothing to measure
+        and would say <i>no data yet</i> however long you left them.
+        <br><br>They come back if you switch off <b>Let the server do
+        everything</b> in Settings. The better fix is for the server to
+        publish its resolved trades so these can be measured properly — that
+        is the next real piece of work, not a setting.
+      </div></div>`;
+  }
+  return body
     + "<h2>Exit brain vs the plain ladder</h2>" + exitBlock()
     + "<h2>Whale / mega-trader engine</h2>" + whaleBlock()
     + "<h2>Do the modules agree?</h2>" + coherenceBlock()
@@ -5193,6 +5214,8 @@ function serverBlock() {
     ${kv("Its coin list", esc(j.coin_source || "top by turnover"))}
     ${j.timeframes ? kv("Timeframes it sweeps", esc(j.timeframes.join("  ·  ")))
       : ""}
+    ${j.rate ? kv("How selective it is", esc(j.rate)
+      + (j.rate === "normal" ? "" : " — set by SCAN_RATE")) : ""}
     ${kv("Strategies it runs", (j.strategies || []).join(", "))}
     ${CFG.pairMode === "custom" ? `<div class="hint" style="margin-bottom:0">
       You are on <b>Only my coins</b>, so anything the server found outside
@@ -8164,7 +8187,7 @@ const rngRaw = (k, label, val, min, max, step, suf) =>
    for a heading that had moved. A page cannot tell you it is stale, so it
    should at least tell you what it is. Read this out and it settles the
    question in one look. */
-const BUILD = "B24 · 2026-08-12 · the switch is on the signals tab";
+const BUILD = "B26 · 2026-08-12 · shows the server rate";
 
 function buildStamp() {
   return `<div class="hint" style="margin-top:18px;text-align:center;

@@ -1593,14 +1593,63 @@ def env_int(name: str, default: int) -> int:
         return default
 
 
-# Every timeframe the ladder needs, downloaded once per coin.
-TF_NEEDED = sorted({tf for pair in CFG["tf_ladder"] for tf in pair},
-                   key=lambda x: ("mhdw".index(x[-1]), int(x[:-1])))
-
 # Fewer coins per run than before, because each one now costs four downloads
 # instead of two. The full list is still covered in the same wall-clock time;
 # the work is just spread over more runs.
 BATCH = env_int("SCAN_BATCH", 12)
+
+
+# =========================================================================
+# HOW OFTEN YOU WANT SIGNALS — set with the SCAN_RATE repository variable
+#
+# Every one of these is the same trade in a different place: more signals for
+# a lower share of them being right. There is no setting that produces more
+# good signals; there is only a setting that produces more signals, of which
+# the same proportion or fewer are good.
+#
+# The knobs are the honest ones — which chart periods get looked at, how much
+# confluence a setup needs, and how many independent reads have to back it.
+# Nothing here changes the maths of a trade, only how selective it is.
+# =========================================================================
+
+RATES: dict[str, dict[str, Any]] = {
+    # A handful a day. Only the slower periods, and they have to be convincing.
+    "calm": {"tf_ladder": [("1h", "4h"), ("4h", "1d")],
+             "min_score": 7, "min_agree": 3, "require_htf": True,
+             "adx_min": 22},
+    # The default: three periods, trend has to agree, two of four reads.
+    "normal": {"tf_ladder": [("15m", "1h"), ("1h", "4h"), ("4h", "1d")],
+               "min_score": 6, "min_agree": 2, "require_htf": True,
+               "adx_min": 20},
+    # Adds the 5-minute chart and drops the agreement floor to one. Expect
+    # several an hour on a wide coin list, and expect more of them to fail.
+    "busy": {"tf_ladder": [("5m", "15m"), ("15m", "1h"), ("1h", "4h"),
+                           ("4h", "1d")],
+             "min_score": 5, "min_agree": 1, "require_htf": True,
+             "adx_min": 18},
+    # Everything the strategies can see, with the higher-timeframe check off.
+    # This is a firehose and a bad way to trade; it is here because seeing the
+    # raw output is sometimes the fastest way to understand what the thing
+    # does.
+    "flood": {"tf_ladder": [("5m", "15m"), ("15m", "1h"), ("1h", "4h"),
+                            ("4h", "1d")],
+              "min_score": 4, "min_agree": 0, "require_htf": False,
+              "adx_min": 15},
+}
+
+RATE = (os.environ.get("SCAN_RATE") or "normal").strip().lower()
+if RATE not in RATES:
+    if RATE:
+        print(f"SCAN_RATE={RATE!r} is not one of "
+              f"{', '.join(RATES)} — using normal")
+    RATE = "normal"
+CFG.update(RATES[RATE])
+
+# Every timeframe the ladder needs, downloaded once per coin. Computed after
+# the rate is applied, or a faster setting would ask for candles nobody
+# fetched.
+TF_NEEDED = sorted({tf for pair in CFG["tf_ladder"] for tf in pair},
+                   key=lambda x: ("mhdw".index(x[-1]), int(x[:-1])))
 MIN_CONF_ALERT = env_int("MIN_CONFIDENCE", 0)
 
 
@@ -1823,7 +1872,7 @@ def card(s: dict) -> str:
 # 1026 lines look identical from the outside, and a run that fails on old
 # code while you are reading new code wastes an afternoon. This says which
 # build actually executed.
-BUILD = "S4 · 2026-08-12 · concurrent writes merged"
+BUILD = "S6 · 2026-08-12 · SCAN_RATE"
 
 
 def main() -> int:
@@ -1965,6 +2014,7 @@ def main() -> int:
                     "max_age_bars", "max_age_hours", "sl_atr",
                     "max_loss_pct", "max_lev", "book_hours")},
         "timeframes": [f"{a} / {b}" for a, b in CFG["tf_ladder"]],
+        "rate": RATE,
         "failed": failed[:10],
         "signals": allsig[:120],
     }

@@ -623,10 +623,14 @@ ok("and the book outlives it, so a published trade keeps being tracked",
 
 # ------------------------------------------- every timeframe, every strategy
 ok("the ladder covers short, medium and long",
-   E.CFG["tf_ladder"] == [("15m", "1h"), ("1h", "4h"), ("4h", "1d")],
+   len(E.CFG["tf_ladder"]) >= 2 and ("4h", "1d") in E.CFG["tf_ladder"],
    str(E.CFG["tf_ladder"]))
+# Derived, not hardcoded: the ladder changes with SCAN_RATE, and a test that
+# assumed one rate would fail on the others for no good reason.
+_want = sorted({tf for pair in E.CFG["tf_ladder"] for tf in pair},
+               key=lambda x: ("mhdw".index(x[-1]), int(x[:-1])))
 ok("and each timeframe is downloaded once, not once per pair",
-   E.TF_NEEDED == ["15m", "1h", "4h", "1d"], str(E.TF_NEEDED))
+   E.TF_NEEDED == _want, f"{E.TF_NEEDED} vs {_want}")
 
 _bars = {tf: candles(flat(120) + [100 + k * 0.6 for k in range(1, 200)])
          for tf in E.TF_NEEDED}
@@ -695,6 +699,34 @@ try:
        len(_json.loads(E.OUT.read_text())["signals"]) == 2)
 finally:
     E.OUT, E.STATE = _ko, _ks
+
+# ------------------------------------------------- how often you want signals
+
+ok("there are four rates, calm through flood",
+   sorted(E.RATES) == ["busy", "calm", "flood", "normal"], str(sorted(E.RATES)))
+ok("each rate names every knob it moves, so none of them leak between rates",
+   len({frozenset(v) for v in E.RATES.values()}) == 1,
+   str([sorted(v) for v in E.RATES.values()][:1]))
+ok("faster rates add faster charts rather than only loosening filters",
+   len(E.RATES["busy"]["tf_ladder"]) > len(E.RATES["normal"]["tf_ladder"])
+   > len(E.RATES["calm"]["tf_ladder"]),
+   str([len(E.RATES[k]["tf_ladder"]) for k in ("calm", "normal", "busy")]))
+ok("and the selectivity moves the way the name implies",
+   E.RATES["calm"]["min_score"] > E.RATES["normal"]["min_score"]
+   > E.RATES["busy"]["min_score"] > E.RATES["flood"]["min_score"],
+   str([E.RATES[k]["min_score"] for k in ("calm", "normal", "busy", "flood")]))
+ok("only the firehose turns the trend check off",
+   [E.RATES[k]["require_htf"] for k in ("calm", "normal", "busy")] == [True] * 3
+   and E.RATES["flood"]["require_htf"] is False)
+ok("an unknown rate falls back to normal rather than crashing the run",
+   E.RATE in E.RATES, E.RATE)
+ok("every timeframe the chosen ladder needs is downloaded",
+   set(E.TF_NEEDED) == {tf for pair in E.CFG["tf_ladder"] for tf in pair},
+   str(E.TF_NEEDED))
+ok("and they are ordered shortest first",
+   E.TF_NEEDED == sorted(E.TF_NEEDED,
+                         key=lambda x: ("mhdw".index(x[-1]), int(x[:-1]))),
+   str(E.TF_NEEDED))
 
 print()
 print(f"{len(PASS)} passed, {len(FAIL)} failed")
