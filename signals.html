@@ -359,6 +359,11 @@ const CFG = {
   // a trade look better (price moved against the signal, so you get in
   // cheaper) and sometimes worse; both are the truth about entering now.
   reprice: true,
+  // Bumped whenever a default changes in a way a saved setup would otherwise
+  // override. Settings are stored on the device, so a switch that used to
+  // default off stays off for ever once it has been saved — the new default
+  // reaches new users only, which is the worst of both. See restoreCfg().
+  cfgV: 30,
   // A re-priced trade has to still pay for its own risk, measured to the
   // final target. Below this the whole move is worth less than what you are
   // risking to get it, however good the direction looks.
@@ -7608,7 +7613,7 @@ const EXPORT_KEYS = [
   "utKey","utAtrLen","ttLen","ttTarget",
   "slAtr","tpAtr","maxLossPct","beAfter","minLev","maxLev","feePct","slipPct",
   "pairs","pairMode","pickBy","sideBias","custom","focus","maxOpen","minShow","maxAgeBars",
-  "coinSince","onlyAfterAdd","reprice","repriceMinRR",
+  "coinSince","onlyAfterAdd","reprice","repriceMinRR","cfgV",
   "alwaysOn","notify","sound","autoRefreshMin","sinceDeploy","dualScan",
   "onConflict",
   "minWinRate","minRecord","liveOnly","botsPerScan","botBtPairs","botBtBars",
@@ -7672,6 +7677,19 @@ function restoreCfg() {
     const cfg = JSON.parse(raw);
     let n = 0;
     for (const k of EXPORT_KEYS) if (k in cfg) { CFG[k] = cfg[k]; n++; }
+
+    // Migrations. Only ever for defaults that changed because the old one was
+    // wrong, and only ever once — after this the stored value wins again, so
+    // turning something off afterwards sticks.
+    const was = cfg.cfgV || 0;
+    if (was < 30) {
+      // Cards were showing the entry price from hours ago and a percentage
+      // measured from it: a loss on a trade nobody took. Anyone who saved a
+      // setup before this existed had it off and would never see the fix.
+      CFG.reprice = true;
+      CFG.repriceMinRR = 1.5;
+    }
+    CFG.cfgV = 30;
     if (cfg.perCoin) {
       AUTOPICK.clear();
       for (const sym in cfg.perCoin) {
@@ -8269,7 +8287,7 @@ const rngRaw = (k, label, val, min, max, step, suf) =>
    for a heading that had moved. A page cannot tell you it is stale, so it
    should at least tell you what it is. Read this out and it settles the
    question in one look. */
-const BUILD = "B30 · 2026-08-12 · re-priced by default";
+const BUILD = "B31 · 2026-08-12 · saved setups get the fix too";
 
 function buildStamp() {
   return `<div class="hint" style="margin-top:18px;text-align:center;
