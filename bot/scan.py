@@ -14,12 +14,15 @@ No exchange keys are used or needed — only public market data.
 from __future__ import annotations
 
 import math
+import re
 import time
 import urllib.error
 import urllib.parse
 import urllib.request
 from dataclasses import dataclass, field, asdict
 from typing import Any
+
+NAN = float("nan")
 
 UA = {"User-Agent": "signals-bot/1.0 (+github actions)"}
 
@@ -230,13 +233,66 @@ def ema(vals: list[float], n: int) -> list[float]:
     return out
 
 
+def wilder(vals: list[float], n: int) -> list[float]:
+    """Wilder's smoothing — what ATR, RSI and ADX are actually defined with.
+
+    This was the single biggest reason server signals differed from the ones
+    on the phone. The server averaged the true range instead of smoothing it,
+    which makes ATR react faster, which moves every stop, every target, every
+    zone width and the ATR% gate. Two engines, two answers, from the same
+    candles. The browser is the reference, so the browser's formula wins."""
+    out: list[float] = []
+    e = vals[0] if vals else 0.0
+    for i, x in enumerate(vals):
+        e = x if i == 0 else e + (x - e) / n
+        out.append(e)
+    return out
+
+
 def sma(vals: list[float], n: int) -> list[float]:
+    """Simple average, undefined until the window is full.
+
+    The warm-up matters: returning a partial average for the first n bars
+    makes a moving-average cross fire during the warm-up, where the browser
+    (which yields NaN) stays silent. That alone produced dozens of phantom
+    Open/Close Cross and Target Trend signals the phone never saw."""
     out, run = [], 0.0
     for i, v in enumerate(vals):
         run += v
         if i >= n:
             run -= vals[i - n]
-        out.append(run / min(i + 1, n))
+        out.append(run / n if i >= n - 1 else NAN)
+    return out
+
+
+def sma_win(vals: list[float], n: int) -> list[float]:
+    """Windowed average that refuses to average over a NaN, rather than
+    carrying an earlier warm-up forward for ever. Used where one average
+    feeds another."""
+    out = [NAN] * len(vals)
+    for i in range(n - 1, len(vals)):
+        s, ok = 0.0, True
+        for k in range(n):
+            x = vals[i - k]
+            if x != x:                       # NaN
+                ok = False
+                break
+            s += x
+        if ok:
+            out[i] = s / n
+    return out
+
+
+def wma(vals: list[float], n: int) -> list[float]:
+    """Linearly weighted average — newest bar counts n times the oldest.
+    NaN until the window fills, exactly as the browser does it."""
+    out = [NAN] * len(vals)
+    denom = n * (n + 1) / 2
+    for i in range(n - 1, len(vals)):
+        s = 0.0
+        for k in range(n):
+            s += vals[i - k] * (n - k)
+        out[i] = s / denom
     return out
 
 
@@ -248,7 +304,7 @@ def rsi(vals: list[float], n: int = 14) -> list[float]:
         d = vals[i] - vals[i - 1]
         gains.append(max(0.0, d))
         losses.append(max(0.0, -d))
-    ag, al = sma(gains, n), sma(losses, n)
+    ag, al = wilder(gains, n), wilder(losses, n)
     return [100.0 if al[i] == 0 else 100 - 100 / (1 + ag[i] / al[i])
             for i in range(len(vals))]
 
@@ -258,6 +314,10 @@ def macd(vals: list[float]) -> tuple[list[float], list[float], list[float]]:
     line = [f[i] - s[i] for i in range(len(vals))]
     sig = ema(line, 9)
     return line, sig, [line[i] - sig[i] for i in range(len(vals))]
+
+
+def now_ms() -> int:
+    return int(time.time() * 1000)
 
 
 def true_range(c: list[dict]) -> list[float]:
@@ -270,7 +330,7 @@ def true_range(c: list[dict]) -> list[float]:
 
 
 def atr(c: list[dict], n: int = 14) -> list[float]:
-    return sma(true_range(c), n)
+    return wilder(true_range(c), n)
 
 
 def adx(c: list[dict], n: int = 14) -> list[float]:
@@ -285,16 +345,17 @@ def adx(c: list[dict], n: int = 14) -> list[float]:
         dn = c[i - 1]["l"] - c[i]["l"]
         plus.append(up if (up > dn and up > 0) else 0.0)
         minus.append(dn if (dn > up and dn > 0) else 0.0)
-    tr, sp, sm = sma(true_range(c), n), sma(plus, n), sma(minus, n)
+    tr, sp, sm = (wilder(true_range(c), n), wilder(plus, n),
+                  wilder(minus, n))
     dx = []
     for i in range(len(c)):
-        if tr[i] <= 0:
+        if not (tr[i] > 0):        # zero or NaN — the browser yields 0 here
             dx.append(0.0)
             continue
         pdi, mdi = 100 * sp[i] / tr[i], 100 * sm[i] / tr[i]
         tot = pdi + mdi
         dx.append(0.0 if tot == 0 else 100 * abs(pdi - mdi) / tot)
-    return sma(dx, n)
+    return wilder(dx, n)
 
 
 @dataclass
@@ -353,8 +414,26 @@ CFG: dict[str, Any] = {
     "atr_min_pct": 0.3,
     "atr_max_pct": 12,
     "max_age_bars": 24,
+    # An absolute ceiling, whatever the candle size. 48 bars on a 1d
+    # chart is 48 days; nobody means that by "fresh".
+    "max_age_hours": 48,
+    # How long an unresolved signal stays in the book before it is
+    # dropped for age alone.
+    "book_hours": 48,
     "chase_warn_r": 0.5,
     "chase_max_r": 1.2,
+    # --- the four ported from the page. Same values as the browser defaults,
+    #     because two engines that disagree about a tolerance produce two
+    #     different signals from the same chart and neither can be trusted.
+    "occ_ma_type": "SMMA", "occ_ma_len": 8, "occ_mult": 3,
+    "occ_exit_on_cross": True,
+    "tt_len": 10, "tt_target": 0,
+    "sr_pivot": 5, "sr_zone_atr": 0.6, "sr_min_touch": 2, "sr_max_age": 400,
+    "sr_mode": "both", "sr_zone_stop": True, "sr_break_atr": 0.25,
+    "pat_pivot": 4, "pat_tol": 2.5, "pat_flat": 1.2, "pat_max_age": 140,
+    "pat_cooldown": 8, "pat_min_height": 1.2, "pat_min_span": 14,
+    "pat_flag_run": 12, "pat_flag_pause": 8, "pat_flag_atr": 3,
+    "pat_cup_bars": 60, "pat_targets": [0.5, 1.0, 1.5, 2.0, 3.0],
     # breakout / rsi / mean reversion / momentum
     "brk_len": 20, "brk_min_adx": 18,
     "rsi_low": 30, "rsi_high": 70, "rsi_with_trend": True,
@@ -362,11 +441,14 @@ CFG: dict[str, Any] = {
     "mom_len": 12, "mom_pct": 2.5, "mom_min_adx": 20,
 }
 
-STRATS = ["confluence", "ut", "brk", "rsi", "mr", "mom"]
-STRAT_NAMES = {"confluence": "Confluence", "ut": "UT Bot", "brk": "Breakout",
-               "rsi": "RSI", "mr": "Mean reversion", "mom": "Momentum"}
-NOT_PORTED = ["Open/Close Cross", "Target Trend", "Support & Resistance",
-              "Chart patterns"]
+STRATS = ["confluence", "occ", "ut", "tt", "sr", "pat",
+          "brk", "rsi", "mr", "mom"]
+STRAT_NAMES = {"confluence": "Confluence", "occ": "Open/Close Cross",
+               "ut": "UT Bot", "tt": "Target Trend",
+               "sr": "Support & Resistance", "pat": "Chart patterns",
+               "brk": "Breakout", "rsi": "RSI", "mr": "Mean reversion",
+               "mom": "Momentum"}
+NOT_PORTED: list[str] = []      # all ten now run here
 
 
 def trade_cost_pct(lev: int) -> float:
@@ -392,9 +474,15 @@ def rnd(v: float, ref: float) -> float:
 
 def build_signal(sym: str, d: Series, i: int, side: str, tag: str,
                  why: list[str], stop_px: float | None = None,
-                 strat: str = "") -> dict | None:
+                 strat: str = "", unit: float | None = None,
+                 mults: list[float] | None = None) -> dict | None:
     """Entry, stop, leverage, targets. Leverage is chosen so that hitting the
-    stop costs a fixed share of margin — never picked first and hoped for."""
+    stop costs a fixed share of margin — never picked first and hoped for.
+
+    `unit` and `mults` let a strategy set its targets in its own measure
+    rather than in ATR. A chart pattern that promises a 3% move should not be
+    sold with a 12% target just because the coin happens to be volatile
+    today, and Target Trend's rungs are multiples of its own band."""
     entry, a = d.close[i], d.atr[i]
     ap = d.atr_pct[i]
     if not (a > 0) or ap < CFG["atr_min_pct"] or ap > CFG["atr_max_pct"]:
@@ -411,9 +499,11 @@ def build_signal(sym: str, d: Series, i: int, side: str, tag: str,
         or CFG["min_lev"]
     risk = "high" if (lev >= 20 or ap >= 4) else \
            "low" if (lev <= 10 and ap < 2) else "medium"
+    step = unit if (unit and unit > 0) else a
+    ladder = mults if mults else CFG["tp_atr"]
     targets = []
-    for k, m in enumerate(CFG["tp_atr"]):
-        tp = entry + sign * m * a
+    for k, m in enumerate(ladder):
+        tp = entry + sign * m * step
         targets.append({"index": k + 1, "price": rnd(tp, entry),
                         "roi": round(abs(tp - entry) / entry * 100 * lev, 2)})
     return {
@@ -614,8 +704,618 @@ def scan_mom(sym: str, d: Series) -> list[dict]:
     return out
 
 
+# =========================================================================
+# THE FOUR THAT USED TO RUN ONLY ON THE PHONE
+#
+# Open/Close Cross, Target Trend, Support & Resistance and the chart patterns
+# carry more state than the others — pivots, zones, aggregated candles — which
+# is why they were left on the device first. Ported here so the page can stop
+# scanning altogether.
+#
+# These are line-for-line ports of the browser versions, not re-inventions.
+# Where the two could drift, the browser is the reference: same pivot rule,
+# same zone widths, same tolerances, same target ladders. A server that
+# "improves" a strategy silently is a server whose numbers you cannot compare
+# with the ones in your hand.
+# =========================================================================
+
+def pivots(c: list[dict], L: int) -> list[dict]:
+    """Swing highs and lows, with the bar at which each became knowable.
+
+    `conf` is the honest part: a swing high at bar i is not visible until
+    bar i+L, because you need L bars on the right to know it was the top.
+    Every replay below reads `conf`, never `i`, so nothing here can see a
+    pivot before the chart could have drawn it."""
+    out = []
+    n = len(c)
+    for i in range(L, n - L):
+        is_h = is_l = True
+        for k in range(i - L, i + L + 1):
+            if k == i:
+                continue
+            if c[k]["h"] >= c[i]["h"]:
+                is_h = False
+            if c[k]["l"] <= c[i]["l"]:
+                is_l = False
+            if not is_h and not is_l:
+                break
+        if is_h:
+            out.append({"i": i, "conf": i + L, "price": c[i]["h"],
+                        "type": "H", "t": c[i]["t"]})
+        if is_l:
+            out.append({"i": i, "conf": i + L, "price": c[i]["l"],
+                        "type": "L", "t": c[i]["t"]})
+    return out
+
+
+# ------------------------------------------------------ support & resistance
+
+def sr_zones(pvs: list[dict], width: float, now_idx: int) -> list[dict]:
+    if not pvs or not (width > 0):
+        return []
+    zones: list[dict] = []
+    cur: dict | None = None
+    for p in sorted(pvs, key=lambda x: x["price"]):
+        if cur and p["price"] - cur["lo"] <= width:
+            cur["hi"] = max(cur["hi"], p["price"])
+            cur["pts"].append(p)
+        else:
+            cur = {"lo": p["price"], "hi": p["price"], "pts": [p]}
+            zones.append(cur)
+    for z in zones:
+        z["mid"] = (z["lo"] + z["hi"]) / 2
+        z["touches"] = len(z["pts"])
+        z["highs"] = sum(1 for p in z["pts"] if p["type"] == "H")
+        z["lows"] = z["touches"] - z["highs"]
+        z["lastIdx"] = max(p["i"] for p in z["pts"])
+        z["kind"] = ("flip" if z["highs"] and z["lows"]
+                     else "resistance" if z["highs"] else "support")
+        age = now_idx - z["lastIdx"]
+        z["strength"] = round(z["touches"] + max(0.0, 1 - age / 400), 2)
+    return zones
+
+
+def sr_hits(d: Series) -> list[dict]:
+    L = CFG["sr_pivot"]
+    pvs = pivots(d.c, L)
+    mode = CFG["sr_mode"]
+    out: list[dict] = []
+    avail: list[dict] = []
+    ptr = 0
+    zones: list[dict] = []
+    next_calc = 0
+    last_idx = -999
+
+    for i in range(210, len(d.c) - 1):
+        while ptr < len(pvs) and pvs[ptr]["conf"] <= i:
+            avail.append(pvs[ptr])
+            ptr += 1
+        if i >= next_calc:
+            live = [p for p in avail if i - p["i"] <= CFG["sr_max_age"]]
+            zones = [z for z in sr_zones(live, CFG["sr_zone_atr"] * d.atr[i], i)
+                     if z["touches"] >= CFG["sr_min_touch"]]
+            # Rebuilt every third bar, not every bar. Zones move slowly and
+            # this is the most expensive loop in the file.
+            next_calc = i + 3
+        if not zones or i - last_idx < CFG["cooldown_bars"]:
+            continue
+
+        b, p, a = d.c[i], d.c[i - 1], d.atr[i]
+        brk = CFG["sr_break_atr"] * a
+        best: dict | None = None
+
+        def take(side: str, z: dict, kind: str) -> None:
+            nonlocal best
+            if best is None or z["strength"] > best["z"]["strength"]:
+                best = {"side": side, "z": z, "kind": kind}
+
+        for z in zones:
+            if mode != "breakout":
+                # Traded into the zone and closed back out of it.
+                if (z["lows"] >= z["highs"] and b["l"] <= z["hi"]
+                        and b["l"] >= z["lo"] - brk and b["c"] > z["hi"]
+                        and p["c"] > z["lo"]):
+                    take("LONG", z, "bounce")
+                if (z["highs"] >= z["lows"] and b["h"] >= z["lo"]
+                        and b["h"] <= z["hi"] + brk and b["c"] < z["lo"]
+                        and p["c"] < z["hi"]):
+                    take("SHORT", z, "bounce")
+            if mode != "bounce":
+                if p["c"] <= z["hi"] and b["c"] > z["hi"] + brk:
+                    take("LONG", z, "breakout")
+                if p["c"] >= z["lo"] and b["c"] < z["lo"] - brk:
+                    take("SHORT", z, "breakout")
+
+        if not best:
+            continue
+        last_idx = i
+        out.append({"idx": i, **best})
+    return out
+
+
+def scan_sr(sym: str, d: Series) -> list[dict]:
+    out = []
+    for hit in sr_hits(d):
+        i, z, side, kind = hit["idx"], hit["z"], hit["side"], hit["kind"]
+        a = d.atr[i]
+        stop_px = None
+        if CFG["sr_zone_stop"] and a > 0:
+            s = (z["lo"] - 0.3 * a) if side == "LONG" else (z["hi"] + 0.3 * a)
+            dist = abs(d.close[i] - s)
+            # Fall back to the ATR stop if the zone puts it absurdly near or far.
+            if 0.3 * a < dist < 3.5 * a:
+                stop_px = s
+        lvl = rnd(z["mid"], d.close[i])
+        why = [
+            (f"Bounce off support {lvl}" if side == "LONG"
+             else f"Rejected at resistance {lvl}") if kind == "bounce"
+            else (f"Broke above resistance {lvl}" if side == "LONG"
+                  else f"Broke below support {lvl}"),
+            f"{z['touches']} touches",
+            "stop placed beyond the zone" if stop_px is not None else "ATR stop",
+        ]
+        tag = ("S&R bounce" if kind == "bounce" else "S&R break") \
+            + " x" + str(z["touches"])
+        s = build_signal(sym, d, i, side, tag, why, stop_px, "sr")
+        if s:
+            s["zone"] = {"lo": z["lo"], "hi": z["hi"],
+                         "touches": z["touches"], "kind": z["kind"]}
+            out.append(s)
+    return out
+
+
+# --------------------------------------------------------- target trend
+
+TT_MULTS = [5, 10, 15, 20, 25]
+
+
+def tt_series(d: Series) -> dict:
+    n = len(d.c)
+    band = [x * 0.8 for x in sma(atr(d.c, 200), 200)]
+    hi = sma([x["h"] for x in d.c], CFG["tt_len"])
+    lo = sma([x["l"] for x in d.c], CFG["tt_len"])
+    upper = [hi[i] + band[i] for i in range(n)]
+    lower = [lo[i] - band[i] for i in range(n)]
+    trend: list[bool | None] = [None] * n
+    t: bool | None = None
+    for i in range(1, n):
+        c, p = d.close[i], d.close[i - 1]
+        if p <= upper[i - 1] and c > upper[i]:
+            t = True
+        elif p >= lower[i - 1] and c < lower[i]:
+            t = False
+        trend[i] = t
+    return {"trend": trend, "upper": upper, "lower": lower, "band": band}
+
+
+def tt_flips(d: Series) -> list[dict]:
+    s = tt_series(d)
+    out = []
+    for i in range(1, len(d.c)):
+        if s["trend"][i] is None or s["trend"][i] == s["trend"][i - 1]:
+            continue
+        out.append({"idx": i, "side": "LONG" if s["trend"][i] else "SHORT",
+                    "stop": s["lower"][i] if s["trend"][i] else s["upper"][i],
+                    "band": s["band"][i]})
+    return out
+
+
+def scan_tt(sym: str, d: Series) -> list[dict]:
+    out = []
+    for f in tt_flips(d):
+        i = f["idx"]
+        if i < 210 or i > len(d.c) - 2:
+            continue
+        long = f["side"] == "LONG"
+        band = f["band"]
+        if not (band > 0):
+            continue
+        stop = f["stop"]
+        why = [
+            f"Target Trend({CFG['tt_len']}) flipped {'up' if long else 'down'}",
+            "close crossed above SMA(high) + band" if long
+            else "close crossed below SMA(low) - band",
+            "stop rides the opposite band",
+        ]
+        sig = build_signal(sym, d, i, "LONG" if long else "SHORT",
+                           f"TT {CFG['tt_len']}", why, stop, "tt",
+                           unit=band, mults=TT_MULTS)
+        if sig:
+            out.append(sig)
+    return out
+
+
+# ----------------------------------------------------------- chart patterns
+
+PAT_NAMES = {
+    "dbot": "Double bottom", "dtop": "Double top",
+    "ihs": "Inverted head & shoulders", "hs": "Head & shoulders",
+    "fwedge": "Falling wedge", "rwedge": "Rising wedge",
+    "atri": "Ascending triangle", "dtri": "Descending triangle",
+    "stri": "Symmetrical triangle", "rect": "Rectangle",
+    "bflag": "Bull flag", "sflag": "Bear flag",
+    "bpen": "Bullish pennant", "spen": "Bearish pennant",
+    "cup": "Cup and handle",
+}
+
+
+def pat_line(a: dict, b: dict):
+    dx = b["i"] - a["i"]
+    if not dx:
+        return None
+    m = (b["price"] - a["price"]) / dx
+    return (m, lambda x: a["price"] + m * (x - a["i"]))
+
+
+def broke_up(d: Series, i: int, lvl: float) -> bool:
+    return d.close[i] > lvl and d.close[i - 1] <= lvl
+
+
+def broke_down(d: Series, i: int, lvl: float) -> bool:
+    return d.close[i] < lvl and d.close[i - 1] >= lvl
+
+
+def pat_at(d: Series, i: int, hi: list[dict], lo: list[dict]) -> dict | None:
+    """One pattern found at bar i, or nothing. `hi`/`lo` are the recent
+    confirmed pivots, oldest first."""
+    px, a = d.close[i], d.atr[i]
+    if not (a > 0) or not (px > 0):
+        return None
+    tol = CFG["pat_tol"] / 100
+    flat = CFG["pat_flat"] / 100
+    min_h = CFG["pat_min_height"] * a
+
+    def near(x: float, y: float) -> bool:
+        return abs(x - y) / ((x + y) / 2) <= tol
+
+    def wide(a1: dict, b1: dict) -> bool:
+        # Three bars apart is not a double bottom, it is two candles. Noise
+        # throws up plenty of those, and counting them is how a pattern
+        # scanner ends up finding a pattern every time you look.
+        return abs(b1["i"] - a1["i"]) >= CFG["pat_min_span"]
+
+    def out(kind, side, level, stop, height, why):
+        if not (height >= min_h):
+            return None
+        # A stop on the wrong side of the entry is not a stop.
+        if (stop >= px) if side == "LONG" else (stop <= px):
+            return None
+        return {"kind": kind, "side": side, "idx": i, "level": level,
+                "stop": stop, "height": height,
+                "why": [PAT_NAMES[kind] + " - broke "
+                        + ("up" if side == "LONG" else "down")] + why}
+
+    H, L = hi[-3:], lo[-3:]
+
+    # ---- double bottom / double top
+    if len(L) >= 2 and len(H) >= 1:
+        l1, l2 = L[-2], L[-1]
+        mids = [h for h in H if l1["i"] < h["i"] < l2["i"]]
+        if mids and wide(l1, l2) and near(l1["price"], l2["price"]) \
+                and broke_up(d, i, mids[-1]["price"]):
+            base = min(l1["price"], l2["price"])
+            r = out("dbot", "LONG", mids[-1]["price"], base - 0.25 * a,
+                    mids[-1]["price"] - base,
+                    [f"two lows at {rnd(base, px)} held",
+                     "broke the high between them"])
+            if r:
+                return r
+    if len(H) >= 2 and len(L) >= 1:
+        h1, h2 = H[-2], H[-1]
+        mids = [x for x in L if h1["i"] < x["i"] < h2["i"]]
+        if mids and wide(h1, h2) and near(h1["price"], h2["price"]) \
+                and broke_down(d, i, mids[-1]["price"]):
+            top = max(h1["price"], h2["price"])
+            r = out("dtop", "SHORT", mids[-1]["price"], top + 0.25 * a,
+                    top - mids[-1]["price"],
+                    [f"two highs at {rnd(top, px)} rejected",
+                     "broke the low between them"])
+            if r:
+                return r
+
+    # ---- head and shoulders, both ways
+    if len(H) >= 3 and len(L) >= 2:
+        s1, head, s2 = H[-3:]
+        necks = [x for x in L if s1["i"] < x["i"] < s2["i"]][-2:]
+        if len(necks) == 2 and wide(s1, s2) and near(s1["price"], s2["price"]) \
+                and head["price"] > max(s1["price"], s2["price"]) * (1 + tol):
+            ln = pat_line(necks[0], necks[1])
+            neck = ln[1](i) if ln else min(necks[0]["price"], necks[1]["price"])
+            if broke_down(d, i, neck):
+                r = out("hs", "SHORT", neck, s2["price"] + 0.25 * a,
+                        head["price"] - neck,
+                        [f"head at {rnd(head['price'], px)} above both shoulders",
+                         "neckline broken"])
+                if r:
+                    return r
+    if len(L) >= 3 and len(H) >= 2:
+        s1, head, s2 = L[-3:]
+        necks = [x for x in H if s1["i"] < x["i"] < s2["i"]][-2:]
+        if len(necks) == 2 and wide(s1, s2) and near(s1["price"], s2["price"]) \
+                and head["price"] < min(s1["price"], s2["price"]) * (1 - tol):
+            ln = pat_line(necks[0], necks[1])
+            neck = ln[1](i) if ln else max(necks[0]["price"], necks[1]["price"])
+            if broke_up(d, i, neck):
+                r = out("ihs", "LONG", neck, s2["price"] - 0.25 * a,
+                        neck - head["price"],
+                        [f"head at {rnd(head['price'], px)} below both shoulders",
+                         "neckline broken"])
+                if r:
+                    return r
+
+    # ---- two trendlines: wedges, triangles, rectangles
+    if len(H) >= 2 and len(L) >= 2:
+        hA, hB, lA, lB = H[-2], H[-1], L[-2], L[-1]
+        upper, lower = pat_line(hA, hB), pat_line(lA, lB)
+        if upper and lower:
+            u_now, l_now = upper[1](i), lower[1](i)
+            span = max(hB["i"], lB["i"]) - min(hA["i"], lA["i"])
+            if span < CFG["pat_min_span"]:
+                return None
+            # Slope as a fraction of price across the whole shape, so "flat"
+            # means the same on a $0.02 coin as on a $60,000 one.
+            u_slope = upper[0] * span / px
+            l_slope = lower[0] * span / px
+            start = min(hA["i"], lA["i"])
+            wA = abs(upper[1](start) - lower[1](start))
+            wB = abs(u_now - l_now)
+            converging = 0 < wB < wA * 0.75
+            u_flat, l_flat = abs(u_slope) < flat, abs(l_slope) < flat
+            height = wA
+
+            def why2(t):
+                return [t, "measured from the widest part of the shape"]
+
+            if converging and u_slope < -flat and l_slope < -flat \
+                    and broke_up(d, i, u_now):
+                r = out("fwedge", "LONG", u_now, min(lB["price"], l_now) - 0.25 * a,
+                        height, why2("both edges sloping down and closing in"))
+                if r:
+                    return r
+            if converging and u_slope > flat and l_slope > flat \
+                    and broke_down(d, i, l_now):
+                r = out("rwedge", "SHORT", l_now, max(hB["price"], u_now) + 0.25 * a,
+                        height, why2("both edges sloping up and closing in"))
+                if r:
+                    return r
+            if u_flat and l_slope > flat and broke_up(d, i, u_now):
+                r = out("atri", "LONG", u_now, min(lB["price"], l_now) - 0.25 * a,
+                        height, why2("flat highs, rising lows"))
+                if r:
+                    return r
+            if l_flat and u_slope < -flat and broke_down(d, i, l_now):
+                r = out("dtri", "SHORT", l_now, max(hB["price"], u_now) + 0.25 * a,
+                        height, why2("flat lows, falling highs"))
+                if r:
+                    return r
+            if converging and u_slope < -flat and l_slope > flat:
+                if broke_up(d, i, u_now):
+                    r = out("stri", "LONG", u_now, l_now - 0.25 * a, height,
+                            why2("range squeezing from both sides"))
+                    if r:
+                        return r
+                if broke_down(d, i, l_now):
+                    r = out("stri", "SHORT", l_now, u_now + 0.25 * a, height,
+                            why2("range squeezing from both sides"))
+                    if r:
+                        return r
+            if u_flat and l_flat:
+                if broke_up(d, i, u_now):
+                    r = out("rect", "LONG", u_now, l_now - 0.25 * a, height,
+                            why2("range broken to the upside"))
+                    if r:
+                        return r
+                if broke_down(d, i, l_now):
+                    r = out("rect", "SHORT", l_now, u_now + 0.25 * a, height,
+                            why2("range broken to the downside"))
+                    if r:
+                        return r
+
+    # ---- flags and pennants
+    cons, imp = CFG["pat_flag_pause"], CFG["pat_flag_run"]
+    s_i, m_i = i - cons - imp, i - cons
+    if s_i >= 1:
+        pole_lo = min(d.c[k]["l"] for k in range(s_i, m_i + 1))
+        pole_hi = max(d.c[k]["h"] for k in range(s_i, m_i + 1))
+        # The consolidation stops at the bar *before* this one. Including the
+        # current bar would mean the price had to break a high it was itself
+        # setting, so a flag could never fire.
+        run_lo = min(d.c[k]["l"] for k in range(m_i, i))
+        run_hi = max(d.c[k]["h"] for k in range(m_i, i))
+        pole, pause = pole_hi - pole_lo, run_hi - run_lo
+        up = d.close[m_i] > d.close[s_i]
+        strong = pole >= CFG["pat_flag_atr"] * a
+        # A "flag" as tall as its own pole is just a range, and calling it a
+        # flag would be the app flattering the chart.
+        shallow = 0 < pause < pole * 0.55
+        if strong and shallow:
+            tight = pause < pole * 0.3
+            if up and broke_up(d, i, run_hi):
+                r = out("bpen" if tight else "bflag", "LONG", run_hi,
+                        run_lo - 0.25 * a, pole,
+                        [f"a {round(pole / a)}xATR run up, then a tight pause",
+                         "broke out of the pause the same way"])
+                if r:
+                    return r
+            if (not up) and broke_down(d, i, run_lo):
+                r = out("spen" if tight else "sflag", "SHORT", run_lo,
+                        run_hi + 0.25 * a, pole,
+                        [f"a {round(pole / a)}xATR run down, then a tight pause",
+                         "broke out of the pause the same way"])
+                if r:
+                    return r
+
+    # ---- cup and handle
+    W = CFG["pat_cup_bars"]
+    if i - W >= 1:
+        low_i, low_v = i - W, float("inf")
+        for k in range(i - W, i + 1):
+            if d.c[k]["l"] < low_v:
+                low_v, low_i = d.c[k]["l"], k
+        left_end = i - W + int(W * 0.25)
+        right_start = i - int(W * 0.25)
+        left_rim = max(d.c[k]["h"] for k in range(i - W, left_end + 1))
+        right_rim = max(d.c[k]["h"] for k in range(right_start, i + 1))
+        rim = min(left_rim, right_rim)
+        middle = (i - W + W * 0.25) < low_i < (i - W * 0.2)
+        depth = rim - low_v
+        if middle and near(left_rim, right_rim) and depth > 0 \
+                and broke_up(d, i, rim):
+            handle = min(d.c[k]["l"] for k in range(right_start, i + 1))
+            if rim - handle < depth * 0.5:
+                r = out("cup", "LONG", rim, handle - 0.25 * a, depth,
+                        ["rounded base with matching rims",
+                         "shallow handle, then through the rim"])
+                if r:
+                    return r
+    return None
+
+
+def pat_hits(d: Series) -> list[dict]:
+    c = d.c
+    allp = pivots(c, CFG["pat_pivot"])
+    out: list[dict] = []
+    if len(allp) < 4 or len(c) < 220:
+        return out
+    p, last = 0, -999
+    for i in range(210, len(c) - 1):
+        while p < len(allp) and allp[p]["conf"] <= i:
+            p += 1
+        if i - last < CFG["pat_cooldown"]:
+            continue
+        hi: list[dict] = []
+        lo: list[dict] = []
+        for k in range(p - 1, -1, -1):
+            if i - allp[k]["i"] > CFG["pat_max_age"]:
+                break
+            (hi if allp[k]["type"] == "H" else lo).insert(0, allp[k])
+            if len(hi) >= 4 and len(lo) >= 4:
+                break
+        if len(hi) < 2 or len(lo) < 2:
+            continue
+        hit = pat_at(d, i, hi, lo)
+        if hit:
+            out.append(hit)
+            last = i
+    return out
+
+
+def scan_pat(sym: str, d: Series) -> list[dict]:
+    out = []
+    for hit in pat_hits(d):
+        # Targets in the pattern's own height — the classic projection — not
+        # in ATR.
+        sig = build_signal(sym, d, hit["idx"], hit["side"],
+                           PAT_NAMES[hit["kind"]], hit["why"], hit["stop"],
+                           "pat", unit=hit["height"], mults=CFG["pat_targets"])
+        if sig:
+            sig["pattern"] = hit["kind"]
+            sig["pat_level"] = rnd(hit["level"], sig["entry"])
+            out.append(sig)
+    return out
+
+
+# ------------------------------------------------------- open/close cross
+
+def aggregate(c: list[dict], n: int) -> list[dict]:
+    """Group candles into higher-timeframe ones. Only complete groups are
+    produced, which is what keeps this non-repainting."""
+    if n <= 1:
+        return [dict(x, endIdx=i) for i, x in enumerate(c)]
+    out = []
+    for i in range(0, len(c) - n + 1, n):
+        g = c[i:i + n]
+        out.append({"t": g[0]["t"], "o": g[0]["o"], "c": g[-1]["c"],
+                    "h": max(x["h"] for x in g), "l": min(x["l"] for x in g),
+                    "v": sum(x["v"] for x in g), "endIdx": i + n - 1})
+    return out
+
+
+def ma_variant(kind: str, src: list[float], n: int,
+               vol: list[float] | None = None) -> list[float]:
+    """The moving-average family the Open/Close Cross script offers. Only the
+    ones the app actually exposes are here; anything else falls back to SMA
+    rather than silently computing something different from the phone."""
+    kind = (kind or "SMMA").upper()
+    if kind == "EMA":
+        return ema(src, n)
+    if kind == "WMA":
+        return wma(src, n)
+    if kind == "TEMA":
+        e1 = ema(src, n)
+        e2 = ema(e1, n)
+        e3 = ema(e2, n)
+        return [3 * (e1[i] - e2[i]) + e3[i] for i in range(len(src))]
+    if kind == "DEMA":
+        e1 = ema(src, n)
+        e2 = ema(e1, n)
+        return [2 * e1[i] - e2[i] for i in range(len(src))]
+    if kind == "HULLMA":
+        half = wma(src, max(1, round(n / 2)))
+        full = wma(src, n)
+        raw = [2 * half[i] - full[i] for i in range(len(src))]
+        return wma(raw, max(1, round(math.sqrt(n))))
+    if kind == "VWMA" and vol:
+        pv = [src[i] * vol[i] for i in range(len(src))]
+        a, b = sma(pv, n), sma(vol, n)
+        return [a[i] / b[i] if b[i] else src[i] for i in range(len(src))]
+    if kind == "SMMA":
+        base = sma_win(src, n)
+        o = [0.0] * len(src)
+        started = False
+        for i in range(len(src)):
+            if not started:
+                o[i] = base[i]
+                started = i >= n - 1
+            else:
+                o[i] = (o[i - 1] * (n - 1) + src[i]) / n
+        return o
+    return sma(src, n)
+
+
+def occ_crosses(c: list[dict]) -> list[dict]:
+    n = max(1, round(CFG["occ_mult"]))
+    agg = aggregate(c, n)
+    if len(agg) < CFG["occ_ma_len"] + 3:
+        return []
+    vol = [x["v"] for x in agg]
+    close_ma = ma_variant(CFG["occ_ma_type"], [x["c"] for x in agg],
+                          CFG["occ_ma_len"], vol)
+    open_ma = ma_variant(CFG["occ_ma_type"], [x["o"] for x in agg],
+                         CFG["occ_ma_len"], vol)
+    out = []
+    for k in range(1, len(agg)):
+        a0, b0, a1, b1 = close_ma[k - 1], open_ma[k - 1], close_ma[k], open_ma[k]
+        if a0 <= b0 and a1 > b1:
+            out.append({"idx": agg[k]["endIdx"], "side": "LONG"})
+        elif a0 >= b0 and a1 < b1:
+            out.append({"idx": agg[k]["endIdx"], "side": "SHORT"})
+    return out
+
+
+def scan_occ(sym: str, d: Series) -> list[dict]:
+    crosses = occ_crosses(d.c)
+    out = []
+    for k, x in enumerate(crosses):
+        i = x["idx"]
+        if i < 210 or i > len(d.c) - 2:
+            continue
+        sig = build_signal(
+            sym, d, i, x["side"],
+            f"{CFG['occ_ma_type']}{CFG['occ_ma_len']}x{CFG['occ_mult']}",
+            ["close/open cross"], None, "occ")
+        if not sig:
+            continue
+        # The strategy's own exit: the pair crossing back the other way.
+        if CFG["occ_exit_on_cross"] and k + 1 < len(crosses):
+            sig["exit_idx"] = crosses[k + 1]["idx"]
+        out.append(sig)
+    return out
+
+
 SCANNERS = {"confluence": scan_confluence, "ut": scan_ut, "brk": scan_brk,
-            "rsi": scan_rsi, "mr": scan_mr, "mom": scan_mom}
+            "rsi": scan_rsi, "mr": scan_mr, "mom": scan_mom,
+            "occ": scan_occ, "tt": scan_tt, "sr": scan_sr, "pat": scan_pat}
 
 
 # ------------------------------------------------------------------ filters
@@ -745,6 +1445,12 @@ def scan_symbol(sym: str, ltf: list[dict], htf: list[dict]) -> dict:
             continue
         if s["at"] < fresh_cut:
             continue
+        # Freshness in bars alone is not enough. On 1-day candles, "24 bars"
+        # means twenty-four *days*, so a setup from last week arrives looking
+        # current. An absolute cap in hours applies whatever the timeframe.
+        if CFG["max_age_hours"] and \
+                (now_ms() - s["at"]) > CFG["max_age_hours"] * 3_600_000:
+            continue
         s["chase"] = chase_check(d, s)
         open_.append(s)
     # newest first, one per coin and direction
@@ -780,31 +1486,46 @@ STATE = ROOT / "bot" / "state.json"
 COINS = ROOT / "bot" / "coins.txt"
 
 
-def wanted_coins() -> list[str]:
-    """The coins you asked for, or nothing if you have not asked.
+def wanted_coins() -> tuple[list[str], int]:
+    """What bot/coins.txt asks for: (named coins, top-N request).
 
-    Read from bot/coins.txt — one symbol per line, blank lines and anything
-    after a # ignored. Kept as a plain file rather than a repository
-    variable so it can be edited in the browser on a phone, and so the list
-    is visible in the repository instead of hidden in a settings page.
+    One symbol per line; blank lines and anything after a # ignored. Kept as
+    a plain file rather than a repository variable so it can be edited in the
+    browser on a phone, and so the list is visible in the repository instead
+    of hidden in a settings page.
 
-    Written loosely on purpose: `btc`, `BTC` and `BTCUSDT` all mean the
-    same thing. A list that rejects your input because you typed it the
-    wrong way is a list you stop maintaining."""
+    A line of the form `TOP 100` means "the hundred biggest by turnover".
+    That is deliberately not expanded into a hundred written-out names: the
+    top hundred changes every week, and a list frozen on the day you wrote it
+    slowly becomes a list of yesterday's coins without ever looking wrong.
+    Named coins and a TOP line can be combined — yours are scanned first,
+    then the biggest are added until the count is reached.
+
+    Written loosely on purpose: `btc`, `BTC`, `BTC/USDT` and `BTCUSDT` all
+    mean the same thing. A list that rejects your input because you typed it
+    the wrong way is a list you stop maintaining."""
     try:
         raw = COINS.read_text()
     except Exception:                      # noqa: BLE001 - absent is normal
-        return []
-    out = []
+        return [], 0
+    out: list[str] = []
+    top = 0
     for line in raw.splitlines():
-        sym = line.split("#")[0].strip().upper().replace("-", "").replace("/", "")
+        txt = line.split("#")[0].strip()
+        if not txt:
+            continue
+        m = re.match(r"^TOP\s*([0-9]{1,4})$", txt, re.I)
+        if m:
+            top = max(top, int(m.group(1)))
+            continue
+        sym = txt.upper().replace("-", "").replace("/", "").replace(" ", "")
         if not sym:
             continue
         if not sym.endswith("USDT"):
             sym += "USDT"
         if sym not in out:
             out.append(sym)
-    return out
+    return out, top
 
 # How much of the coin list one run covers. A scheduled job that tries to do
 # everything gets killed halfway and writes nothing; one that does a slice
@@ -832,6 +1553,124 @@ def env_int(name: str, default: int) -> int:
 
 BATCH = env_int("SCAN_BATCH", 18)
 MIN_CONF_ALERT = env_int("MIN_CONFIDENCE", 0)
+
+
+# =========================================================================
+# THE BOOK
+#
+# Until now every run rebuilt each coin's signals from scratch, so the two
+# found at 7:00 were simply replaced by whatever 7:15 found. From the outside
+# that reads as signals vanishing for no reason, and it makes the list
+# impossible to act on: you cannot take a trade that might not be there when
+# you look again.
+#
+# So a published signal now has a life of its own. Later runs update it —
+# price, targets hit, stop moved — and it leaves for one of exactly four
+# reasons, all of which are things that actually happened:
+#
+#   * it hit its stop
+#   * it reached its final target
+#   * the same coin fired the opposite direction, which invalidates it
+#   * it has sat unresolved for longer than book_hours
+#
+# Nothing else removes it. In particular, "this scan did not re-find it" does
+# not, because a strategy that no longer sees an entry is not the same thing
+# as a trade that ended.
+# =========================================================================
+
+def sig_key(s: dict) -> str:
+    return f"{s['symbol']}|{s['side']}|{s['at']}|{s.get('strat', '')}"
+
+
+def retrack(s: dict, d: Series) -> dict:
+    """Replay a published signal against the newest candles.
+
+    Works on a copy so a half-updated signal can never be written back if
+    something throws part-way. The index is re-found by timestamp rather than
+    trusted from last time, because the candle window slides: bar 300 of the
+    last run is not bar 300 of this one."""
+    out = dict(s)
+    idx = None
+    for i, b in enumerate(d.c):
+        if b["t"] == s["at"]:
+            idx = i
+            break
+    if idx is None or idx >= len(d.c) - 1:
+        # The entry bar has scrolled out of the window. Keep the signal as it
+        # stands rather than dropping it — losing a live trade because the
+        # history got long is exactly the behaviour being fixed here.
+        return out
+    out["idx"] = idx
+    # track() mutates, so hand it the copy and let it work.
+    out.setdefault("hits", 0)
+    out.setdefault("be", False)
+    out["stop"] = out.get("initial_stop", out["stop"])
+    for t in out.get("targets", []):
+        t["hit"] = False
+    track(out, d)
+    out["last_price"] = d.close[-1]
+    return out
+
+
+def merge_book(kept: list[dict], fresh: list[dict], tracked: dict[str, dict],
+               by_sym: dict) -> tuple[list[dict], list[str]]:
+    book: dict[str, dict] = {}
+    for s in kept:
+        book[sig_key(s)] = s
+    # Updated versions of things already published win over the stored copy.
+    for k, s in tracked.items():
+        book[k] = s
+    logs = []
+    added = flipped = 0
+    for s in sorted(fresh, key=lambda x: x["at"]):
+        if sig_key(s) in book:
+            continue
+        open_here = [b for b in book.values()
+                     if b["symbol"] == s["symbol"] and not b.get("closed_at")]
+        same = [b for b in open_here if b["side"] == s["side"]]
+        if same:
+            # The same coin, the same direction, already open. The trade you
+            # were shown is still the trade; a second entry on top of it is
+            # noise, and replacing it would be the exact behaviour being
+            # fixed — the old one disappearing when a new one arrives.
+            continue
+        # The other direction, though, is a contradiction. Holding both at
+        # once is not a hedge, it is the app failing to make up its mind.
+        for b in open_here:
+            if b["side"] != s["side"] and s["at"] > b["at"]:
+                b["status"] = "flipped"
+                b["closed_at"] = s["at"]
+                flipped += 1
+        still_open = [b for b in book.values()
+                      if b["symbol"] == s["symbol"] and not b.get("closed_at")]
+        if any(b["side"] != s["side"] for b in still_open):
+            # An older signal in the other direction is already published and
+            # still valid. It keeps the coin; this one is dropped rather than
+            # sitting beside it saying the opposite.
+            continue
+        s["published"] = now_ms()
+        book[sig_key(s)] = s
+        added += 1
+
+    resolved = [s for s in book.values() if s.get("closed_at")]
+    live = []
+    aged = 0
+    for s in book.values():
+        if s.get("closed_at"):
+            continue
+        born = s.get("published") or s["at"]
+        if now_ms() - born > CFG["book_hours"] * 3_600_000:
+            aged += 1
+            continue
+        px = by_sym.get(s["symbol"], {}).get("price")
+        if px:
+            s["last_price"] = px
+        live.append(s)
+
+    live.sort(key=lambda x: (-x.get("confidence", 0), -x["at"]))
+    logs.append(f"book: {len(live)} live, {added} new, "
+                f"{len(resolved)} resolved, {flipped} flipped, {aged} aged out")
+    return live, logs
 
 
 def load_state() -> dict:
@@ -935,7 +1774,7 @@ def card(s: dict) -> str:
 # 1026 lines look identical from the outside, and a run that fails on old
 # code while you are reading new code wastes an afternoon. This says which
 # build actually executed.
-BUILD = "2026-08-12 state-fix"
+BUILD = "2026-08-12 top-n"
 
 
 def main() -> int:
@@ -961,18 +1800,32 @@ def main() -> int:
     # Your list wins if you have one. Anything in it the venue does not
     # carry is named rather than silently dropped — a coin quietly missing
     # from a list you wrote yourself is worse than one that complains.
-    asked = wanted_coins()
+    asked, top_n = wanted_coins()
     unknown = [s for s in asked if s not in by_sym]
     known = [s for s in asked if s in by_sym]
-    if asked and not known:
+    if asked and not known and not top_n:
         print(f"none of the {len(asked)} coins in bot/coins.txt exist here "
               f"({SOURCE[0] if SOURCE else '?'}) — scanning by turnover instead")
-    if known:
+
+    if top_n:
+        # Your named coins first, then fill up with the biggest by turnover
+        # until the count is reached. Naming a coin should always mean it is
+        # scanned, even if it sits at number four hundred.
+        universe = list(known)
+        for t in tk:
+            if len(universe) >= top_n:
+                break
+            if t["symbol"] not in universe:
+                universe.append(t["symbol"])
+        coin_source = (f"top {len(universe)} by turnover"
+                       + (f", {len(known)} of them named" if known else ""))
+    elif known:
         universe = known
         coin_source = f"bot/coins.txt ({len(known)} coins)"
     else:
         universe = [t["symbol"] for t in tk[:CFG["pairs"]]]
         coin_source = f"top {len(universe)} by turnover"
+
     if unknown:
         print(f"not available on this venue, skipped: {', '.join(unknown)}")
     print(f"coins: {coin_source}")
@@ -994,8 +1847,16 @@ def main() -> int:
     inplay = set(universe)
     kept = [s for s in prev.get("signals", [])
             if s["symbol"] not in batch and s["symbol"] in inplay]
+    _ = kept
+
+    # Anything already published for a coin in this batch gets re-tracked
+    # against fresh candles: same trade, updated. That is what stops a signal
+    # from disappearing simply because a later scan did not re-find it.
+    open_prev = {sig_key(s): s for s in prev.get("signals", [])
+                 if s["symbol"] in batch and not s.get("closed_at")}
 
     fresh, closed_all, failed = [], [], []
+    tracked: dict[str, dict] = {}
     for sym in batch:
         try:
             ltf = klines(sym, CFG["signal_tf"], CFG["bars"])
@@ -1003,6 +1864,10 @@ def main() -> int:
             res = scan_symbol(sym, ltf, htf)
             fresh.extend(res["open"])
             closed_all.extend(res["closed"])
+            d = enrich(ltf)
+            for k, s in list(open_prev.items()):
+                if s["symbol"] == sym:
+                    tracked[k] = retrack(s, d)
         except Exception as e:             # noqa: BLE001
             failed.append(f"{sym}: {e}")
         time.sleep(0.15)                   # be polite to the API
@@ -1022,14 +1887,11 @@ def main() -> int:
         if px:
             s["last_price"] = px
 
-    allsig = kept + fresh
-    # drop anything that has aged out of usefulness since an earlier run
-    now_ms = int(time.time() * 1000)
-    allsig = [s for s in allsig if now_ms - s["at"] < 36 * 3600 * 1000]
-    allsig.sort(key=lambda x: (-x.get("confidence", 0), -x["at"]))
+    allsig, book_log = merge_book(kept, fresh, tracked, by_sym)
+    log.extend(book_log)
 
     payload = {
-        "generated": now_ms,
+        "generated": now_ms(),
         "generated_iso": time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()),
         "run_seconds": round(time.time() - started, 1),
         "scanned": batch,
@@ -1041,6 +1903,7 @@ def main() -> int:
         "runs": state.get("runs", 0) + 1,
         "strategies": [STRAT_NAMES[k] for k in STRATS],
         "not_ported": NOT_PORTED,
+        "book_hours": CFG["book_hours"],
         "config": {k: CFG[k] for k in
                    ("signal_tf", "trend_tf", "min_score", "min_agree",
                     "max_age_bars", "sl_atr", "max_loss_pct", "max_lev")},

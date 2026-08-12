@@ -450,32 +450,173 @@ _keptc = E.COINS
 _dir = _pl.Path(_tf.mkdtemp())
 E.COINS = _dir / "coins.txt"
 try:
-    ok("no file means no list, so the server falls back to turnover",
-       E.wanted_coins() == [], str(E.wanted_coins()))
+    ok("no file means no list and no top-N",
+       E.wanted_coins() == ([], 0), str(E.wanted_coins()))
 
     E.COINS.write_text("BTC\neth\n  SOLUSDT  \n\n# a note\nBNB # inline note\n"
                        "DOGE-USDT\nBTC\n")
-    got = E.wanted_coins()
-    ok("bare names get USDT added", "BTCUSDT" in got and "ETHUSDT" in got,
-       str(got))
+    got, top = E.wanted_coins()
+    ok("bare names get USDT added", "BTCUSDT" in got and "ETHUSDT" in got, str(got))
     ok("lower case is accepted", "ETHUSDT" in got)
     ok("a full symbol is left alone", "SOLUSDT" in got)
-    ok("comments and blank lines are ignored",
-       "#ANOTEUSDT" not in " ".join(got) and len(got) == 5, str(got))
+    ok("comments and blank lines are ignored", len(got) == 5, str(got))
     ok("an inline comment does not become part of the name",
        "BNBUSDT" in got, str(got))
-    ok("dashes and slashes are tolerated", "DOGEUSDTUSDT" not in got
-       and "DOGEUSDT" in got, str(got))
+    ok("dashes and slashes are tolerated",
+       "DOGEUSDTUSDT" not in got and "DOGEUSDT" in got, str(got))
     ok("a coin listed twice is only scanned once",
        got.count("BTCUSDT") == 1, str(got))
     ok("and the order you wrote is the order it scans",
        got == ["BTCUSDT", "ETHUSDT", "SOLUSDT", "BNBUSDT", "DOGEUSDT"], str(got))
+    ok("no TOP line means no top-N", top == 0, str(top))
 
     E.COINS.write_text("\n\n#only comments\n   \n")
     ok("a file with nothing usable in it counts as no list",
-       E.wanted_coins() == [], str(E.wanted_coins()))
+       E.wanted_coins() == ([], 0), str(E.wanted_coins()))
+
+    # ---- TOP N: a self-updating list rather than a hundred frozen names
+    for text, want in [("TOP 100", 100), ("top100", 100), ("Top   50", 50),
+                       ("TOP 100 # the big ones", 100)]:
+        E.COINS.write_text(text + "\n")
+        got, top = E.wanted_coins()
+        ok(f"`{text}` asks for the top {want}", top == want and got == [],
+           f"{top} {got}")
+
+    E.COINS.write_text("BTC\nXPL\nTOP 20\n")
+    got, top = E.wanted_coins()
+    ok("named coins and a TOP line can be combined",
+       got == ["BTCUSDT", "XPLUSDT"] and top == 20, f"{got} {top}")
+
+    E.COINS.write_text("TOPAZ\n")
+    got, top = E.wanted_coins()
+    ok("a coin whose name starts with TOP is not mistaken for a directive",
+       got == ["TOPAZUSDT"] and top == 0, f"{got} {top}")
+
+    E.COINS.write_text("TOP 10\nTOP 40\n")
+    ok("two TOP lines take the larger", E.wanted_coins()[1] == 40,
+       str(E.wanted_coins()))
 finally:
     E.COINS = _keptc
+
+# ------------------------------------------------------------------ the book
+#
+# "At 7:00 two signals come. At 7:15 two more come, but the old ones stay
+# unless they stopped out or flipped." That sentence is the spec; these are
+# the tests for it.
+
+def mk(sym, side="LONG", at=1000, strat="confluence", closed=None):
+    s = {"symbol": sym, "side": side, "at": at, "strat": strat,
+         "entry": 100.0, "stop": 98.0, "initial_stop": 98.0,
+         "leverage": 5, "confidence": 50, "hits": 0, "be": False,
+         "targets": [{"index": i, "price": 100 + i, "roi": i} for i in range(1, 6)],
+         "published": E.now_ms()}
+    if closed:
+        s["closed_at"] = closed
+        s["status"] = "stopped"
+    return s
+
+
+seven_oclock = [mk("AAAUSDT"), mk("BBBUSDT")]
+quarter_past = [mk("CCCUSDT", at=2000), mk("DDDUSDT", at=2000)]
+
+live, _ = E.merge_book(seven_oclock, quarter_past, {}, {})
+syms = sorted(s["symbol"] for s in live)
+ok("a later scan adds to the list instead of replacing it",
+   syms == ["AAAUSDT", "BBBUSDT", "CCCUSDT", "DDDUSDT"], str(syms))
+
+# the same signal found again is not duplicated
+live, _ = E.merge_book(seven_oclock, list(seven_oclock), {}, {})
+ok("re-finding the same signal does not double it", len(live) == 2, str(len(live)))
+
+# a stop-out leaves
+stopped = mk("AAAUSDT", closed=E.now_ms())
+live, _ = E.merge_book([], [], {E.sig_key(stopped): stopped}, {})
+ok("a signal that hit its stop leaves the book", live == [], str(live))
+
+# the opposite direction on the same coin invalidates what was open
+old_long = mk("AAAUSDT", side="LONG", at=1000)
+new_short = mk("AAAUSDT", side="SHORT", at=5000)
+live, _ = E.merge_book([old_long], [new_short], {}, {})
+sides = [(s["symbol"], s["side"]) for s in live]
+ok("an opposite signal on the same coin removes the old one",
+   sides == [("AAAUSDT", "SHORT")], str(sides))
+
+# but not the other way round: an older opposite signal must not kill a newer one
+older_short = mk("AAAUSDT", side="SHORT", at=100)
+newer_long = mk("AAAUSDT", side="LONG", at=9000)
+live, _ = E.merge_book([newer_long], [older_short], {}, {})
+ok("an older opposite signal does not displace a newer published one",
+   [s["side"] for s in live] == ["LONG"], str([s["side"] for s in live]))
+
+# and a coin never shows both directions at once, whichever order they arrive
+for order in ("new-first", "old-first"):
+    a = mk("ZZZUSDT", side="LONG", at=1000)
+    b = mk("ZZZUSDT", side="SHORT", at=5000)
+    live, _ = E.merge_book([a], [b] if order == "new-first" else [b, a], {}, {})
+    ok(f"one direction per coin ({order})",
+       len({s["side"] for s in live}) == 1, str([s["side"] for s in live]))
+
+# a second entry in the same direction does not replace the first
+first = mk("YYYUSDT", side="LONG", at=1000)
+second = mk("YYYUSDT", side="LONG", at=6000, strat="ut")
+live, _ = E.merge_book([first], [second], {}, {})
+ok("a fresh signal the same way does not push the open one out",
+   len(live) == 1 and live[0]["at"] == 1000, str([s["at"] for s in live]))
+
+# a different coin's flip touches nothing
+live, _ = E.merge_book([mk("AAAUSDT", side="LONG")],
+                       [mk("BBBUSDT", side="SHORT", at=5000)], {}, {})
+ok("a flip on one coin leaves other coins alone", len(live) == 2, str(len(live)))
+
+# age
+stale = mk("AAAUSDT")
+stale["published"] = E.now_ms() - (E.CFG["book_hours"] + 1) * 3_600_000
+live, _ = E.merge_book([stale], [], {}, {})
+ok("an unresolved signal older than the book window is dropped",
+   live == [], str(live))
+
+justin = mk("AAAUSDT")
+justin["published"] = E.now_ms() - (E.CFG["book_hours"] - 1) * 3_600_000
+live, _ = E.merge_book([justin], [], {}, {})
+ok("one just inside the window stays", len(live) == 1, str(len(live)))
+
+# a re-tracked signal replaces the stored copy rather than sitting beside it
+orig = mk("AAAUSDT")
+upd = dict(orig)
+upd["hits"] = 3
+live, _ = E.merge_book([orig], [], {E.sig_key(orig): upd}, {})
+ok("re-tracking updates in place, it does not duplicate",
+   len(live) == 1 and live[0]["hits"] == 3, str(live))
+
+# the live price is refreshed from the ticker
+live, _ = E.merge_book([mk("AAAUSDT")], [], {}, {"AAAUSDT": {"price": 123.0}})
+ok("the live price is refreshed each run", live[0]["last_price"] == 123.0,
+   str(live[0].get("last_price")))
+
+# ---- retrack: same trade, updated, and never invented
+_seq = [100.0] * 300 + [100 + k * 0.4 for k in range(1, 30)]
+_d = E.enrich(candles(_seq))
+_live = {"symbol": "X", "side": "LONG", "at": _d.c[299]["t"], "strat": "t",
+         "entry": 100.0, "stop": 98.0, "initial_stop": 98.0, "leverage": 5,
+         "hits": 0, "be": False, "idx": 299,
+         "targets": [{"index": i, "price": 100 + i, "roi": i} for i in range(1, 6)]}
+_out = E.retrack(dict(_live), _d)
+ok("re-tracking finds the entry bar by time, not by a stale index",
+   _out["idx"] == 299, str(_out["idx"]))
+ok("and it picks up the targets that have since been hit",
+   _out["hits"] >= 5, str(_out["hits"]))
+ok("re-tracking does not mutate the copy it was given",
+   _live["hits"] == 0, str(_live["hits"]))
+
+_gone = dict(_live)
+_gone["at"] = 1                      # entry bar no longer in the window
+_kept_out = E.retrack(_gone, _d)
+ok("a signal whose entry bar has scrolled away is kept, not dropped",
+   _kept_out["symbol"] == "X", str(_kept_out.get("symbol")))
+
+# ---- the absolute freshness cap
+ok("there is an hours cap as well as a bars one",
+   E.CFG["max_age_hours"] == 48, str(E.CFG["max_age_hours"]))
 
 print()
 print(f"{len(PASS)} passed, {len(FAIL)} failed")
