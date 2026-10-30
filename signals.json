@@ -1,7 +1,7 @@
 {
- "generated": 1793339952972,
- "generated_iso": "2026-10-30T05:59:12Z",
- "run_seconds": 23.7,
+ "generated": 1793340019244,
+ "generated_iso": "2026-10-30T06:00:19Z",
+ "run_seconds": 24.0,
  "scanned": [
   "XAUUSDT",
   "XAGUSDT",
@@ -706,6 +706,82 @@
    "be": false
   },
   {
+   "symbol": "INJUSDT",
+   "side": "SHORT",
+   "leverage": 7,
+   "risk": "medium",
+   "tag": "6/8",
+   "reasons": [
+    "EMA21 < EMA50",
+    "EMA50 < EMA200",
+    "price below EMA21",
+    "RSI 40 in band",
+    "MACD below signal",
+    "ADX 33 (trending)"
+   ],
+   "strat": "confluence",
+   "strat_name": "Confluence",
+   "entry": 7.338,
+   "stop": 7.631,
+   "initial_stop": 7.631,
+   "atr_pct": 2.66,
+   "adx": 33.3,
+   "at": 1793336400000,
+   "idx": 298,
+   "targets": [
+    {
+     "index": 1,
+     "price": 7.192,
+     "roi": 13.97
+    },
+    {
+     "index": 2,
+     "price": 7.045,
+     "roi": 27.95
+    },
+    {
+     "index": 3,
+     "price": 6.85,
+     "roi": 46.58
+    },
+    {
+     "index": 4,
+     "price": 6.654,
+     "roi": 65.21
+    },
+    {
+     "index": 5,
+     "price": 6.361,
+     "roi": 93.16
+    }
+   ],
+   "stf": "1h",
+   "ttf": "4h",
+   "score": 6,
+   "agree": 4,
+   "agree_of": 4,
+   "hits": 0,
+   "status": "in_progress",
+   "closed_at": null,
+   "price": 7.338,
+   "roi": -0.98,
+   "chase": {
+    "verdict": "take",
+    "ran": 0.0,
+    "why": [
+     "still within 0.5R of the signal price"
+    ]
+   },
+   "confidence": 94,
+   "record": {
+    "n": 113,
+    "wins": 61,
+    "rate": 54
+   },
+   "last_price": 7.339,
+   "published": 1793340019244
+  },
+  {
    "symbol": "MAGICUSDT",
    "side": "LONG",
    "leverage": 3,
@@ -1013,6 +1089,84 @@
    "last_price": 920.08,
    "published": 1786552476751,
    "be": false
+  },
+  {
+   "symbol": "SOXLUSDT",
+   "side": "SHORT",
+   "leverage": 13,
+   "risk": "medium",
+   "tag": "S&R break x2",
+   "reasons": [
+    "Broke below support 87.495",
+    "2 touches",
+    "stop placed beyond the zone"
+   ],
+   "strat": "sr",
+   "strat_name": "Support & Resistance",
+   "entry": 86.32,
+   "stop": 88.234,
+   "initial_stop": 88.234,
+   "atr_pct": 1.79,
+   "adx": 50.3,
+   "at": 1793320200000,
+   "idx": 277,
+   "targets": [
+    {
+     "index": 1,
+     "price": 85.16,
+     "roi": 17.47
+    },
+    {
+     "index": 2,
+     "price": 84.0,
+     "roi": 34.94
+    },
+    {
+     "index": 3,
+     "price": 82.453,
+     "roi": 58.23
+    },
+    {
+     "index": 4,
+     "price": 80.907,
+     "roi": 81.53
+    },
+    {
+     "index": 5,
+     "price": 78.587,
+     "roi": 116.47
+    }
+   ],
+   "stf": "15m",
+   "ttf": "1h",
+   "zone": {
+    "lo": 87.22,
+    "hi": 87.77,
+    "touches": 2,
+    "kind": "support"
+   },
+   "agree": 3,
+   "agree_of": 4,
+   "hits": 2,
+   "status": "in_progress",
+   "closed_at": null,
+   "price": 86.2,
+   "roi": -0.01,
+   "chase": {
+    "verdict": "take",
+    "ran": 0.06,
+    "why": [
+     "still within 0.5R of the signal price"
+    ]
+   },
+   "confidence": 92,
+   "record": {
+    "n": 116,
+    "wins": 79,
+    "rate": 68
+   },
+   "last_price": 86.18,
+   "published": 1793340019244
   },
   {
    "symbol": "CHIPUSDT",
@@ -1324,80 +1478,6 @@
    "confidence": 92,
    "last_price": 609.3,
    "be": false
-  },
-  {
-   "symbol": "SOXLUSDT",
-   "side": "SHORT",
-   "leverage": 7,
-   "risk": "low",
-   "tag": "Bearish pennant",
-   "reasons": [
-    "Bearish pennant - broke down",
-    "a 9xATR run down, then a tight pause",
-    "broke out of the pause the same way"
-   ],
-   "strat": "pat",
-   "strat_name": "Chart patterns",
-   "entry": 86.32,
-   "stop": 89.717,
-   "initial_stop": 89.717,
-   "atr_pct": 1.79,
-   "adx": 50.3,
-   "at": 1793320200000,
-   "idx": 278,
-   "targets": [
-    {
-     "index": 1,
-     "price": 79.045,
-     "roi": 59.0
-    },
-    {
-     "index": 2,
-     "price": 71.77,
-     "roi": 117.99
-    },
-    {
-     "index": 3,
-     "price": 64.495,
-     "roi": 176.99
-    },
-    {
-     "index": 4,
-     "price": 57.22,
-     "roi": 235.98
-    },
-    {
-     "index": 5,
-     "price": 42.67,
-     "roi": 353.97
-    }
-   ],
-   "stf": "15m",
-   "ttf": "1h",
-   "pattern": "spen",
-   "pat_level": 87.22,
-   "agree": 3,
-   "agree_of": 4,
-   "hits": 0,
-   "status": "in_progress",
-   "closed_at": null,
-   "price": 86.09,
-   "roi": 0.89,
-   "chase": {
-    "verdict": "take",
-    "ran": 0.07,
-    "why": [
-     "still within 0.5R of the signal price"
-    ]
-   },
-   "confidence": 91,
-   "record": {
-    "n": 115,
-    "wins": 76,
-    "rate": 66
-   },
-   "last_price": 86.11,
-   "published": 1793339952972
   },
   {
    "symbol": "DASHUSDT",
@@ -1941,154 +2021,75 @@
    "be": false
   },
   {
-   "symbol": "WLDUSDT",
+   "symbol": "XAGUSDT",
    "side": "SHORT",
-   "leverage": 7,
-   "risk": "medium",
-   "tag": "6/8",
+   "leverage": 20,
+   "risk": "high",
+   "tag": "Breakdown 20",
    "reasons": [
-    "EMA21 < EMA50",
-    "EMA50 < EMA200",
-    "price below EMA21",
-    "RSI 40 in band",
-    "MACD below signal",
-    "ADX 28 (trending)"
+    "closed below the 20-bar low",
+    "ADX 36 \u2014 trending"
    ],
-   "strat": "confluence",
-   "strat_name": "Confluence",
-   "entry": 0.3915,
-   "stop": 0.40805,
-   "initial_stop": 0.40805,
-   "atr_pct": 2.82,
-   "adx": 28.5,
-   "at": 1793332800000,
+   "strat": "brk",
+   "strat_name": "Breakout",
+   "entry": 51.21,
+   "stop": 51.86,
+   "initial_stop": 51.86,
+   "atr_pct": 0.85,
+   "adx": 35.6,
+   "at": 1793336400000,
    "idx": 298,
    "targets": [
     {
      "index": 1,
-     "price": 0.38323,
-     "roi": 14.8
+     "price": 50.885,
+     "roi": 12.7
     },
     {
      "index": 2,
-     "price": 0.37495,
-     "roi": 29.59
+     "price": 50.56,
+     "roi": 25.4
     },
     {
      "index": 3,
-     "price": 0.36392,
-     "roi": 49.32
+     "price": 50.126,
+     "roi": 42.34
     },
     {
      "index": 4,
-     "price": 0.35288,
-     "roi": 69.04
+     "price": 49.692,
+     "roi": 59.28
     },
     {
      "index": 5,
-     "price": 0.33634,
-     "roi": 98.63
+     "price": 49.042,
+     "roi": 84.68
     }
    ],
    "stf": "1h",
    "ttf": "4h",
-   "score": 6,
    "agree": 4,
    "agree_of": 4,
    "hits": 0,
    "status": "in_progress",
    "closed_at": null,
-   "price": 0.3947,
-   "roi": -6.7,
+   "price": 51.24,
+   "roi": -3.97,
    "chase": {
     "verdict": "take",
-    "ran": -0.19,
+    "ran": -0.05,
     "why": [
      "still within 0.5R of the signal price"
     ]
    },
    "confidence": 89,
    "record": {
-    "n": 103,
-    "wins": 65,
-    "rate": 63
+    "n": 87,
+    "wins": 37,
+    "rate": 43
    },
-   "last_price": 0.3947,
-   "published": 1793339952972
-  },
-  {
-   "symbol": "INJUSDT",
-   "side": "SHORT",
-   "leverage": 7,
-   "risk": "low",
-   "tag": "Bear flag",
-   "reasons": [
-    "Bear flag - broke down",
-    "a 7xATR run down, then a tight pause",
-    "broke out of the pause the same way"
-   ],
-   "strat": "pat",
-   "strat_name": "Chart patterns",
-   "entry": 7.246,
-   "stop": 7.525,
-   "initial_stop": 7.525,
-   "atr_pct": 1.43,
-   "adx": 50.2,
-   "at": 1793318400000,
-   "idx": 276,
-   "targets": [
-    {
-     "index": 1,
-     "price": 6.873,
-     "roi": 36.03
-    },
-    {
-     "index": 2,
-     "price": 6.5,
-     "roi": 72.07
-    },
-    {
-     "index": 3,
-     "price": 6.127,
-     "roi": 108.1
-    },
-    {
-     "index": 4,
-     "price": 5.754,
-     "roi": 144.13
-    },
-    {
-     "index": 5,
-     "price": 5.008,
-     "roi": 216.2
-    }
-   ],
-   "stf": "15m",
-   "ttf": "1h",
-   "pattern": "sflag",
-   "pat_level": 7.275,
-   "agree": 4,
-   "agree_of": 4,
-   "hits": 0,
-   "status": "in_progress",
-   "closed_at": null,
-   "price": 7.331,
-   "roi": -9.19,
-   "chase": {
-    "verdict": "take",
-    "ran": -0.3,
-    "why": [
-     "still within 0.5R of the signal price"
-    ]
-   },
-   "confidence": 89,
-   "record": {
-    "n": 116,
-    "wins": 65,
-    "rate": 56
-   },
-   "last_price": 7.331,
-   "published": 1793339952972
+   "last_price": 51.24,
+   "published": 1793340019244
   },
   {
    "symbol": "ONEUSDT",
@@ -2245,6 +2246,82 @@
    "be": false
   },
   {
+   "symbol": "WLDUSDT",
+   "side": "SHORT",
+   "leverage": 7,
+   "risk": "medium",
+   "tag": "6/8",
+   "reasons": [
+    "EMA21 < EMA50",
+    "EMA50 < EMA200",
+    "price below EMA21",
+    "RSI 40 in band",
+    "MACD below signal",
+    "ADX 28 (trending)"
+   ],
+   "strat": "confluence",
+   "strat_name": "Confluence",
+   "entry": 0.3915,
+   "stop": 0.40805,
+   "initial_stop": 0.40805,
+   "atr_pct": 2.82,
+   "adx": 28.5,
+   "at": 1793332800000,
+   "idx": 297,
+   "targets": [
+    {
+     "index": 1,
+     "price": 0.38323,
+     "roi": 14.8
+    },
+    {
+     "index": 2,
+     "price": 0.37495,
+     "roi": 29.59
+    },
+    {
+     "index": 3,
+     "price": 0.36392,
+     "roi": 49.32
+    },
+    {
+     "index": 4,
+     "price": 0.35288,
+     "roi": 69.04
+    },
+    {
+     "index": 5,
+     "price": 0.33634,
+     "roi": 98.63
+    }
+   ],
+   "stf": "1h",
+   "ttf": "4h",
+   "score": 6,
+   "agree": 4,
+   "agree_of": 4,
+   "hits": 0,
+   "status": "in_progress",
+   "closed_at": null,
+   "price": 0.3956,
+   "roi": -8.31,
+   "chase": {
+    "verdict": "take",
+    "ran": -0.25,
+    "why": [
+     "still within 0.5R of the signal price"
+    ]
+   },
+   "confidence": 88,
+   "record": {
+    "n": 109,
+    "wins": 70,
+    "rate": 64
+   },
+   "last_price": 0.3956,
+   "published": 1793340019244
+  },
+  {
    "symbol": "PUMPUSDT",
    "side": "SHORT",
    "leverage": 11,
@@ -2390,83 +2467,6 @@
    },
    "last_price": 0.016596,
    "published": 1787020176708
-  },
-  {
-   "symbol": "XAGUSDT",
-   "side": "SHORT",
-   "leverage": 14,
-   "risk": "medium",
-   "tag": "7/8",
-   "reasons": [
-    "EMA21 < EMA50",
-    "EMA50 < EMA200",
-    "price below EMA21",
-    "MACD below signal",
-    "MACD histogram expanding",
-    "ADX 46 (trending)",
-    "volume above average"
-   ],
-   "strat": "confluence",
-   "strat_name": "Confluence",
-   "entry": 51.45,
-   "stop": 52.5,
-   "initial_stop": 52.5,
-   "atr_pct": 1.36,
-   "adx": 46.4,
-   "at": 1793318400000,
-   "idx": 298,
-   "targets": [
-    {
-     "index": 1,
-     "price": 50.925,
-     "roi": 14.28
-    },
-    {
-     "index": 2,
-     "price": 50.4,
-     "roi": 28.56
-    },
-    {
-     "index": 3,
-     "price": 49.701,
-     "roi": 47.6
-    },
-    {
-     "index": 4,
-     "price": 49.001,
-     "roi": 66.64
-    },
-    {
-     "index": 5,
-     "price": 47.952,
-     "roi": 95.2
-    }
-   ],
-   "stf": "4h",
-   "ttf": "1d",
-   "score": 7,
-   "agree": 4,
-   "agree_of": 4,
-   "hits": 0,
-   "status": "in_progress",
-   "closed_at": null,
-   "price": 51.15,
-   "roi": 6.2,
-   "chase": {
-    "verdict": "take",
-    "ran": 0.29,
-    "why": [
-     "still within 0.5R of the signal price"
-    ]
-   },
-   "confidence": 86,
-   "record": {
-    "n": 82,
-    "wins": 39,
-    "rate": 48
-   },
-   "last_price": 51.15,
-   "published": 1793339952972
   },
   {
    "symbol": "ONDOUSDT",
@@ -4321,23 +4321,23 @@
    "hits": 0,
    "status": "in_progress",
    "closed_at": null,
-   "price": 1295.0,
-   "roi": 5.17,
+   "price": 1297.3,
+   "roi": 4.11,
    "chase": {
     "verdict": "take",
-    "ran": 0.21,
+    "ran": 0.17,
     "why": [
      "still within 0.5R of the signal price"
     ]
    },
    "confidence": 80,
    "record": {
-    "n": 106,
-    "wins": 66,
+    "n": 109,
+    "wins": 68,
     "rate": 62
    },
-   "last_price": 1294.9,
-   "published": 1793339952972
+   "last_price": 1297.1,
+   "published": 1793340019244
   },
   {
    "symbol": "DOODUSDT",
@@ -5636,6 +5636,77 @@
    "be": false
   },
   {
+   "symbol": "ZECUSDT",
+   "side": "LONG",
+   "leverage": 6,
+   "risk": "medium",
+   "tag": "SMMA8x3",
+   "reasons": [
+    "close/open cross"
+   ],
+   "strat": "occ",
+   "strat_name": "Open/Close Cross",
+   "entry": 1279.24,
+   "stop": 1224.24,
+   "initial_stop": 1224.24,
+   "atr_pct": 2.87,
+   "adx": 25.6,
+   "at": 1793329200000,
+   "idx": 296,
+   "targets": [
+    {
+     "index": 1,
+     "price": 1306.74,
+     "roi": 12.9
+    },
+    {
+     "index": 2,
+     "price": 1334.24,
+     "roi": 25.8
+    },
+    {
+     "index": 3,
+     "price": 1370.91,
+     "roi": 43.0
+    },
+    {
+     "index": 4,
+     "price": 1407.58,
+     "roi": 60.19
+    },
+    {
+     "index": 5,
+     "price": 1462.58,
+     "roi": 85.99
+    }
+   ],
+   "stf": "1h",
+   "ttf": "4h",
+   "exit_idx": 299,
+   "agree": 2,
+   "agree_of": 4,
+   "hits": 0,
+   "status": "in_progress",
+   "closed_at": null,
+   "price": 1268.13,
+   "roi": -6.05,
+   "chase": {
+    "verdict": "take",
+    "ran": -0.2,
+    "why": [
+     "still within 0.5R of the signal price"
+    ]
+   },
+   "confidence": 72,
+   "record": {
+    "n": 121,
+    "wins": 73,
+    "rate": 60
+   },
+   "last_price": 1268.4,
+   "published": 1793340019244
+  },
+  {
    "symbol": "AMDUSDT",
    "side": "LONG",
    "leverage": 20,
@@ -5715,83 +5786,6 @@
    "be": false
   },
   {
-   "symbol": "XAUUSDT",
-   "side": "SHORT",
-   "leverage": 20,
-   "risk": "high",
-   "tag": "6/8",
-   "reasons": [
-    "EMA21 < EMA50",
-    "EMA50 < EMA200",
-    "price below EMA21",
-    "RSI 45 in band",
-    "MACD below signal",
-    "ADX 28 (trending)"
-   ],
-   "strat": "confluence",
-   "strat_name": "Confluence",
-   "entry": 4028.5,
-   "stop": 4062.57,
-   "initial_stop": 4062.57,
-   "atr_pct": 0.56,
-   "adx": 27.5,
-   "at": 1793260800000,
-   "idx": 294,
-   "targets": [
-    {
-     "index": 1,
-     "price": 4011.47,
-     "roi": 8.46
-    },
-    {
-     "index": 2,
-     "price": 3994.43,
-     "roi": 16.91
-    },
-    {
-     "index": 3,
-     "price": 3971.72,
-     "roi": 28.19
-    },
-    {
-     "index": 4,
-     "price": 3949.01,
-     "roi": 39.46
-    },
-    {
-     "index": 5,
-     "price": 3914.94,
-     "roi": 56.38
-    }
-   ],
-   "stf": "4h",
-   "ttf": "1d",
-   "score": 6,
-   "agree": 4,
-   "agree_of": 4,
-   "hits": 1,
-   "status": "in_progress",
-   "closed_at": null,
-   "price": 4002.9,
-   "roi": 9.91,
-   "chase": {
-    "verdict": "retest",
-    "ran": 0.75,
-    "retest": 4021.69,
-    "why": [
-     "ran 0.8R \u2014 wait for a pullback"
-    ]
-   },
-   "confidence": 71,
-   "record": {
-    "n": 37,
-    "wins": 18,
-    "rate": 49
-   },
-   "last_price": 4002.9,
-   "published": 1793339952972
-  },
-  {
    "symbol": "PLTRUSDT",
    "side": "SHORT",
    "leverage": 13,
@@ -5867,6 +5861,83 @@
    "last_price": 177.09,
    "published": 1786556453682,
    "be": false
+  },
+  {
+   "symbol": "XAUUSDT",
+   "side": "SHORT",
+   "leverage": 20,
+   "risk": "high",
+   "tag": "6/8",
+   "reasons": [
+    "EMA21 < EMA50",
+    "EMA50 < EMA200",
+    "price below EMA21",
+    "RSI 45 in band",
+    "MACD below signal",
+    "ADX 28 (trending)"
+   ],
+   "strat": "confluence",
+   "strat_name": "Confluence",
+   "entry": 4028.5,
+   "stop": 4062.57,
+   "initial_stop": 4062.57,
+   "atr_pct": 0.56,
+   "adx": 27.5,
+   "at": 1793260800000,
+   "idx": 294,
+   "targets": [
+    {
+     "index": 1,
+     "price": 4011.47,
+     "roi": 8.46
+    },
+    {
+     "index": 2,
+     "price": 3994.43,
+     "roi": 16.91
+    },
+    {
+     "index": 3,
+     "price": 3971.72,
+     "roi": 28.19
+    },
+    {
+     "index": 4,
+     "price": 3949.01,
+     "roi": 39.46
+    },
+    {
+     "index": 5,
+     "price": 3914.94,
+     "roi": 56.38
+    }
+   ],
+   "stf": "4h",
+   "ttf": "1d",
+   "score": 6,
+   "agree": 4,
+   "agree_of": 4,
+   "hits": 1,
+   "status": "in_progress",
+   "closed_at": null,
+   "price": 4003.4,
+   "roi": 9.66,
+   "chase": {
+    "verdict": "retest",
+    "ran": 0.74,
+    "retest": 4021.69,
+    "why": [
+     "ran 0.7R \u2014 wait for a pullback"
+    ]
+   },
+   "confidence": 70,
+   "record": {
+    "n": 40,
+    "wins": 18,
+    "rate": 45
+   },
+   "last_price": 4003.5,
+   "published": 1793340019244
   },
   {
    "symbol": "IOSTUSDT",
@@ -6254,84 +6325,6 @@
    "last_price": 0.29699,
    "published": 1786552476751,
    "be": false
-  },
-  {
-   "symbol": "ZECUSDT",
-   "side": "LONG",
-   "leverage": 4,
-   "risk": "high",
-   "tag": "S&R break x3",
-   "reasons": [
-    "Broke above resistance 1232.9",
-    "3 touches",
-    "stop placed beyond the zone"
-   ],
-   "strat": "sr",
-   "strat_name": "Support & Resistance",
-   "entry": 1279.24,
-   "stop": 1201.15,
-   "initial_stop": 1201.15,
-   "atr_pct": 4.39,
-   "adx": 16.7,
-   "at": 1793318400000,
-   "idx": 298,
-   "targets": [
-    {
-     "index": 1,
-     "price": 1321.37,
-     "roi": 13.17
-    },
-    {
-     "index": 2,
-     "price": 1363.5,
-     "roi": 26.35
-    },
-    {
-     "index": 3,
-     "price": 1419.67,
-     "roi": 43.91
-    },
-    {
-     "index": 4,
-     "price": 1475.84,
-     "roi": 61.47
-    },
-    {
-     "index": 5,
-     "price": 1560.09,
-     "roi": 87.82
-    }
-   ],
-   "stf": "4h",
-   "ttf": "1d",
-   "zone": {
-    "lo": 1218.0,
-    "hi": 1247.8,
-    "touches": 3,
-    "kind": "resistance"
-   },
-   "agree": 3,
-   "agree_of": 4,
-   "hits": 0,
-   "status": "in_progress",
-   "closed_at": null,
-   "price": 1266.23,
-   "roi": -4.63,
-   "chase": {
-    "verdict": "take",
-    "ran": -0.17,
-    "why": [
-     "still within 0.5R of the signal price"
-    ]
-   },
-   "confidence": 68,
-   "record": {
-    "n": 118,
-    "wins": 73,
-    "rate": 62
-   },
-   "last_price": 1266.58,
-   "published": 1793339952972
   },
   {
    "symbol": "INTCUSDT",
@@ -7988,68 +7981,68 @@
   {
    "symbol": "INJUSDT",
    "side": "LONG",
-   "leverage": 9,
-   "risk": "low",
-   "tag": "UT 3/10",
+   "leverage": 16,
+   "risk": "medium",
+   "tag": "SMMA8x3",
    "reasons": [
-    "price crossed the ATR trailing stop",
-    "the stop rides that same line"
+    "close/open cross"
    ],
-   "strat": "ut",
-   "strat_name": "UT Bot",
-   "entry": 7.354,
-   "stop": 7.126,
-   "initial_stop": 7.126,
-   "atr_pct": 1.29,
-   "adx": 39.4,
-   "at": 1793334600000,
-   "idx": 294,
+   "strat": "occ",
+   "strat_name": "Open/Close Cross",
+   "entry": 7.407,
+   "stop": 7.274,
+   "initial_stop": 7.274,
+   "atr_pct": 1.2,
+   "adx": 33.1,
+   "at": 1793337300000,
+   "idx": 296,
    "targets": [
     {
      "index": 1,
-     "price": 7.425,
-     "roi": 8.68
+     "price": 7.473,
+     "roi": 14.36
     },
     {
      "index": 2,
-     "price": 7.496,
-     "roi": 17.37
+     "price": 7.54,
+     "roi": 28.73
     },
     {
      "index": 3,
-     "price": 7.591,
-     "roi": 28.95
+     "price": 7.629,
+     "roi": 47.88
     },
     {
      "index": 4,
-     "price": 7.685,
-     "roi": 40.52
+     "price": 7.717,
+     "roi": 67.03
     },
     {
      "index": 5,
-     "price": 7.827,
-     "roi": 57.89
+     "price": 7.85,
+     "roi": 95.75
     }
    ],
    "stf": "15m",
    "ttf": "1h",
+   "exit_idx": 299,
    "agree": 2,
    "agree_of": 4,
-   "hits": 1,
+   "hits": 0,
    "status": "in_progress",
    "closed_at": null,
-   "price": 7.331,
-   "roi": -4.07,
+   "price": 7.342,
+   "roi": -16.28,
    "chase": {
     "verdict": "take",
-    "ran": -0.1,
+    "ran": -0.49,
     "why": [
      "still within 0.5R of the signal price"
     ]
    },
    "waiting_for": "the 1h trend is the other way",
    "pending": true,
-   "confidence": 81
+   "confidence": 70
   },
   {
    "symbol": "WLDUSDT",
@@ -8073,7 +8066,7 @@
    "atr_pct": 1.25,
    "adx": 34.4,
    "at": 1793337300000,
-   "idx": 297,
+   "idx": 296,
    "targets": [
     {
      "index": 1,
@@ -8109,18 +8102,18 @@
    "hits": 0,
    "status": "in_progress",
    "closed_at": null,
-   "price": 0.3947,
-   "roi": -19.01,
+   "price": 0.3956,
+   "roi": -15.63,
    "chase": {
     "verdict": "take",
-    "ran": -0.6,
+    "ran": -0.48,
     "why": [
      "still within 0.5R of the signal price"
     ]
    },
    "waiting_for": "the 1h trend is the other way",
    "pending": true,
-   "confidence": 67
+   "confidence": 70
   },
   {
    "symbol": "ZECUSDT",
@@ -8144,7 +8137,7 @@
    "atr_pct": 2.76,
    "adx": 26.4,
    "at": 1793311200000,
-   "idx": 292,
+   "idx": 291,
    "targets": [
     {
      "index": 1,
@@ -8175,89 +8168,94 @@
    "stf": "1h",
    "ttf": "4h",
    "score": 6,
-   "agree": 2,
+   "agree": 3,
    "agree_of": 4,
    "hits": 2,
    "status": "in_progress",
    "closed_at": null,
-   "price": 1266.23,
-   "roi": -13.71,
+   "price": 1268.13,
+   "roi": -14.78,
    "chase": {
     "verdict": "take",
-    "ran": -0.44,
+    "ran": -0.48,
     "why": [
      "still within 0.5R of the signal price"
     ]
    },
    "waiting_for": "the 4h trend is the other way",
    "pending": true,
-   "confidence": 62
+   "confidence": 69
   },
   {
-   "symbol": "SUIUSDT",
-   "side": "LONG",
-   "leverage": 19,
+   "symbol": "TRXUSDT",
+   "side": "SHORT",
+   "leverage": 14,
    "risk": "medium",
-   "tag": "Breakout 20",
+   "tag": "6/8",
    "reasons": [
-    "closed above the 20-bar high",
-    "ADX 35 \u2014 trending"
+    "price below EMA21",
+    "RSI 35 in band",
+    "MACD below signal",
+    "MACD histogram expanding",
+    "ADX 22 (trending)",
+    "volume above average"
    ],
-   "strat": "brk",
-   "strat_name": "Breakout",
-   "entry": 0.9019,
-   "stop": 0.88774,
-   "initial_stop": 0.88774,
-   "atr_pct": 1.05,
-   "adx": 34.8,
-   "at": 1793336400000,
-   "idx": 296,
+   "strat": "confluence",
+   "strat_name": "Confluence",
+   "entry": 0.33908,
+   "stop": 0.34596,
+   "initial_stop": 0.34596,
+   "atr_pct": 1.35,
+   "adx": 21.7,
+   "at": 1793339100000,
+   "idx": 298,
    "targets": [
     {
      "index": 1,
-     "price": 0.90898,
-     "roi": 14.92
+     "price": 0.33564,
+     "roi": 14.21
     },
     {
      "index": 2,
-     "price": 0.91606,
-     "roi": 29.84
+     "price": 0.3322,
+     "roi": 28.42
     },
     {
      "index": 3,
-     "price": 0.92551,
-     "roi": 49.73
+     "price": 0.32761,
+     "roi": 47.36
     },
     {
      "index": 4,
-     "price": 0.93495,
-     "roi": 69.62
+     "price": 0.32302,
+     "roi": 66.31
     },
     {
      "index": 5,
-     "price": 0.94911,
-     "roi": 99.46
+     "price": 0.31614,
+     "roi": 94.73
     }
    ],
    "stf": "15m",
    "ttf": "1h",
+   "score": 6,
    "agree": 2,
    "agree_of": 4,
    "hits": 0,
    "status": "in_progress",
    "closed_at": null,
-   "price": 0.89,
-   "roi": -27.73,
+   "price": 0.33886,
+   "roi": -1.05,
    "chase": {
     "verdict": "take",
-    "ran": -0.84,
+    "ran": 0.03,
     "why": [
      "still within 0.5R of the signal price"
     ]
    },
    "waiting_for": "the 1h trend is the other way",
    "pending": true,
-   "confidence": 60
+   "confidence": 65
   },
   {
    "symbol": "XLMUSDT",
@@ -8277,7 +8275,7 @@
    "atr_pct": 0.7,
    "adx": 27.4,
    "at": 1793338200000,
-   "idx": 298,
+   "idx": 297,
    "targets": [
     {
      "index": 1,
@@ -8312,18 +8310,84 @@
    "hits": 0,
    "status": "in_progress",
    "closed_at": null,
-   "price": 0.1665,
-   "roi": -15.93,
+   "price": 0.16667,
+   "roi": -13.9,
    "chase": {
     "verdict": "take",
-    "ran": -0.63,
+    "ran": -0.53,
     "why": [
      "still within 0.5R of the signal price"
     ]
    },
    "waiting_for": "the 1h trend is the other way",
    "pending": true,
-   "confidence": 58
+   "confidence": 61
+  },
+  {
+   "symbol": "SUIUSDT",
+   "side": "LONG",
+   "leverage": 19,
+   "risk": "medium",
+   "tag": "Breakout 20",
+   "reasons": [
+    "closed above the 20-bar high",
+    "ADX 35 \u2014 trending"
+   ],
+   "strat": "brk",
+   "strat_name": "Breakout",
+   "entry": 0.9019,
+   "stop": 0.88774,
+   "initial_stop": 0.88774,
+   "atr_pct": 1.05,
+   "adx": 34.8,
+   "at": 1793336400000,
+   "idx": 295,
+   "targets": [
+    {
+     "index": 1,
+     "price": 0.90898,
+     "roi": 14.92
+    },
+    {
+     "index": 2,
+     "price": 0.91606,
+     "roi": 29.84
+    },
+    {
+     "index": 3,
+     "price": 0.92551,
+     "roi": 49.73
+    },
+    {
+     "index": 4,
+     "price": 0.93495,
+     "roi": 69.62
+    },
+    {
+     "index": 5,
+     "price": 0.94911,
+     "roi": 99.46
+    }
+   ],
+   "stf": "15m",
+   "ttf": "1h",
+   "agree": 2,
+   "agree_of": 4,
+   "hits": 0,
+   "status": "in_progress",
+   "closed_at": null,
+   "price": 0.8899,
+   "roi": -27.94,
+   "chase": {
+    "verdict": "take",
+    "ran": -0.85,
+    "why": [
+     "still within 0.5R of the signal price"
+    ]
+   },
+   "waiting_for": "the 1h trend is the other way",
+   "pending": true,
+   "confidence": 60
   },
   {
    "symbol": "SNDKUSDT",
@@ -8336,38 +8400,38 @@
    ],
    "strat": "occ",
    "strat_name": "Open/Close Cross",
-   "entry": 1311.4,
-   "stop": 1292.41,
-   "initial_stop": 1292.41,
-   "atr_pct": 0.97,
-   "adx": 29.7,
-   "at": 1793331000000,
+   "entry": 1308.1,
+   "stop": 1289.51,
+   "initial_stop": 1289.51,
+   "atr_pct": 0.95,
+   "adx": 28.5,
+   "at": 1793331900000,
    "idx": 290,
    "targets": [
     {
      "index": 1,
-     "price": 1320.9,
-     "roi": 14.48
+     "price": 1317.39,
+     "roi": 14.21
     },
     {
      "index": 2,
-     "price": 1330.39,
-     "roi": 28.96
+     "price": 1326.69,
+     "roi": 28.42
     },
     {
      "index": 3,
-     "price": 1343.05,
-     "roi": 48.27
+     "price": 1339.08,
+     "roi": 47.37
     },
     {
      "index": 4,
-     "price": 1355.71,
-     "roi": 67.58
+     "price": 1351.47,
+     "roi": 66.31
     },
     {
      "index": 5,
-     "price": 1374.7,
-     "roi": 96.54
+     "price": 1370.06,
+     "roi": 94.73
     }
    ],
    "stf": "15m",
@@ -8378,84 +8442,18 @@
    "hits": 1,
    "status": "in_progress",
    "closed_at": null,
-   "price": 1295.0,
-   "roi": -27.81,
+   "price": 1296.4,
+   "roi": -20.69,
    "chase": {
     "verdict": "take",
-    "ran": -0.86,
+    "ran": -0.63,
     "why": [
      "still within 0.5R of the signal price"
     ]
    },
    "waiting_for": "the 1h trend is the other way",
    "pending": true,
-   "confidence": 56
-  },
-  {
-   "symbol": "TRXUSDT",
-   "side": "SHORT",
-   "leverage": 14,
-   "risk": "medium",
-   "tag": "Breakdown 20",
-   "reasons": [
-    "closed below the 20-bar low",
-    "ADX 21 \u2014 trending"
-   ],
-   "strat": "brk",
-   "strat_name": "Breakout",
-   "entry": 0.34162,
-   "stop": 0.34868,
-   "initial_stop": 0.34868,
-   "atr_pct": 1.38,
-   "adx": 21.0,
-   "at": 1793338200000,
-   "idx": 298,
-   "targets": [
-    {
-     "index": 1,
-     "price": 0.33809,
-     "roi": 14.47
-    },
-    {
-     "index": 2,
-     "price": 0.33456,
-     "roi": 28.93
-    },
-    {
-     "index": 3,
-     "price": 0.32985,
-     "roi": 48.22
-    },
-    {
-     "index": 4,
-     "price": 0.32515,
-     "roi": 67.51
-    },
-    {
-     "index": 5,
-     "price": 0.31809,
-     "roi": 96.45
-    }
-   ],
-   "stf": "15m",
-   "ttf": "1h",
-   "agree": 2,
-   "agree_of": 4,
-   "hits": 0,
-   "status": "in_progress",
-   "closed_at": null,
-   "price": 0.33911,
-   "roi": 8.33,
-   "chase": {
-    "verdict": "take",
-    "ran": 0.36,
-    "why": [
-     "still within 0.5R of the signal price"
-    ]
-   },
-   "waiting_for": "the 1h trend is the other way",
-   "pending": true,
-   "confidence": 55
+   "confidence": 60
   },
   {
    "symbol": "UNIUSDT",
@@ -8475,7 +8473,7 @@
    "atr_pct": 1.32,
    "adx": 24.9,
    "at": 1793336400000,
-   "idx": 296,
+   "idx": 295,
    "targets": [
     {
      "index": 1,
@@ -8510,18 +8508,18 @@
    "hits": 0,
    "status": "in_progress",
    "closed_at": null,
-   "price": 6.745,
-   "roi": -26.17,
+   "price": 6.753,
+   "roi": -24.42,
    "chase": {
     "verdict": "take",
-    "ran": -0.81,
+    "ran": -0.75,
     "why": [
      "still within 0.5R of the signal price"
     ]
    },
    "waiting_for": "the 1h trend is the other way",
    "pending": true,
-   "confidence": 49
+   "confidence": 51
   },
   {
    "symbol": "SOXLUSDT",
@@ -8541,7 +8539,7 @@
    "atr_pct": 3.56,
    "adx": 21.9,
    "at": 1793314800000,
-   "idx": 293,
+   "idx": 292,
    "targets": [
     {
      "index": 1,
@@ -8576,11 +8574,11 @@
    "hits": 0,
    "status": "in_progress",
    "closed_at": null,
-   "price": 86.12,
-   "roi": -11.98,
+   "price": 86.19,
+   "roi": -11.66,
    "chase": {
     "verdict": "take",
-    "ran": -0.4,
+    "ran": -0.39,
     "why": [
      "still within 0.5R of the signal price"
     ]
@@ -8590,5 +8588,5 @@
    "confidence": 39
   }
  ],
- "merged_with": 1793339895195
+ "merged_with": 1793339952972
 }
